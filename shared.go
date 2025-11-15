@@ -34,8 +34,8 @@ func EpsilonSymbolCreate[TObservation any]() Symbol[TObservation] {
 
 // Transition defines a single transition between one state to the next
 // for a given input symbol.
-type Transition[TSymbol any] struct {
-	symbol       Symbol[TSymbol]
+type Transition[TObservation any] struct {
+	symbol       Symbol[TObservation]
 	currentState uint64
 	nextState    uint64
 }
@@ -103,6 +103,27 @@ func (s *dfaStateSubset) Equals(o *dfaStateSubset) bool {
 		}
 	}
 	return true
+}
+
+// CopyFrom copies an entire subset.
+func (dst *dfaStateSubset) CopyFrom(src *dfaStateSubset) {
+	for i := range dst.words {
+		dst.words[i] = src.words[i]
+	}
+}
+
+// Intersect computes a ∩ b into dst.
+func (dst *dfaStateSubset) Intersect(a, b *dfaStateSubset) {
+	for i := range dst.words {
+		dst.words[i] = a.words[i] & b.words[i]
+	}
+}
+
+// Difference computes a \ b into dst.
+func (dst *dfaStateSubset) Difference(a, b *dfaStateSubset) {
+	for i := range dst.words {
+		dst.words[i] = a.words[i] &^ b.words[i]
+	}
 }
 
 // Count returns number of states present in the subset.
