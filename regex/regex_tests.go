@@ -32,6 +32,8 @@ func TestRegex(t *testing.T) {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
 		},
 		testRegex,
+		true,
+		false,
 	)
 
 	if err != nil {

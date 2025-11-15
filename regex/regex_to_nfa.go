@@ -7,10 +7,12 @@ import (
 	"sort"
 )
 
-func RegexToNFA(
+func RegexToNFA[TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
 	regex string,
-) (*autarch.NFA[rune, bool], error) {
+	acceptToken TStateOutcome,
+	invalidState TStateOutcome,
+) (*autarch.NFA[rune, TStateOutcome], error) {
 
 	// 1. Tokenize
 	tokens, err := tokenizeRegex(regex)
@@ -38,8 +40,11 @@ func RegexToNFA(
 	indexer := buildIndexer(alphabet)
 
 	// 6. Build state outcomes (all false except accept)
-	states := make([]bool, numStates)
-	states[fragment.accept] = true
+	states := make([]TStateOutcome, numStates)
+	for i := uint64(0); i < numStates; i++ {
+		states[i] = invalidState
+	}
+	states[fragment.accept] = acceptToken
 
 	// 7. Normalize transitions: assign symbolID from indexer
 	nfaTransitions, err := normalizeTransitions(fragment.transitions, indexer)
@@ -48,7 +53,7 @@ func RegexToNFA(
 	}
 
 	// 8. Build the final NFA
-	nfa := autarch.NFACreate[rune, bool](
+	nfa := autarch.NFACreate(
 		allocFn,
 		alphabet,
 		nfaTransitions,
