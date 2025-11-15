@@ -14,6 +14,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	dfaAllocationFn memarch.AllocationFn,
 	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
+	invalidOutcome TStateOutcome,
 ) *DFA[TObservation, TStateOutcome] {
 
 	// ───────────────────────────────────────────────────────────────
@@ -203,10 +204,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	// Outcomes per block
 	minOut := make([]TStateOutcome, blockCount)
 	for bid := range P {
-		out, err := determineOutcome[TStateOutcome](&P[bid], stateArray)
-		if err != nil {
-			panic(fmt.Errorf("DFAMinimize: block %v empty outcome", bid))
-		}
+		out := determineOutcome[TStateOutcome](&P[bid], stateArray, invalidOutcome)
 		minOut[bid] = out
 	}
 
@@ -230,9 +228,9 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 
 			next := DFATransition(dfa, obs, representative, cursor)
 			minTransitions = append(minTransitions, Transition[TObservation]{
-				currentState: uint64(bid),
-				symbol:       sym,
-				nextState:    stateToBlock[next],
+				CurrentState: uint64(bid),
+				Symbol:       sym,
+				NextState:    stateToBlock[next],
 			})
 		}
 	}

@@ -1,43 +1,42 @@
 package autarch
 
 import (
-	"fmt"
 	"math/bits"
 	"memcore"
 	"memstruct"
 )
 
-const epsilonID = ^uint64(0)
+const AutarchEpsilonID = ^uint64(0)
 
 // SymbolIndexer must return the symbol for a given observation.
 // It should return false when the observation is not included in the language's alphabet.
 type SymbolIndexer[TObservation any] func(observation TObservation) (Symbol[TObservation], bool)
 
 type Symbol[TObservation any] struct {
-	symbolDescription string
-	symbolID          uint64
+	SymbolDescription string
+	SymbolID          uint64
 }
 
 func SymbolCreate[TObservation any](description string, id uint64) Symbol[TObservation] {
 	return Symbol[TObservation]{
-		symbolDescription: description,
-		symbolID:          id,
+		SymbolDescription: description,
+		SymbolID:          id,
 	}
 }
 
 func EpsilonSymbolCreate[TObservation any]() Symbol[TObservation] {
 	return Symbol[TObservation]{
-		symbolDescription: "epsilon",
-		symbolID:          epsilonID,
+		SymbolDescription: "epsilon",
+		SymbolID:          AutarchEpsilonID,
 	}
 }
 
 // Transition defines a single transition between one state to the next
 // for a given input symbol.
 type Transition[TObservation any] struct {
-	symbol       Symbol[TObservation]
-	currentState uint64
-	nextState    uint64
+	Symbol       Symbol[TObservation]
+	CurrentState uint64
+	NextState    uint64
 }
 
 //go:inline
@@ -156,30 +155,38 @@ func (s *dfaStateSubset) States() []uint64 {
 }
 
 // determineOutcome picks the "best" outcome for a subset of NFA states.
-// We use the lowest-indexed NFA state with a non-invalid outcome.
+//
+// We implement the priority rule:
+// Use the outcome of the lowest-indexed NFA state that has a
+// "non-invalid" (i.e., non-zero) outcome.
+//
+// If all states in the subset have a "zero" outcome, the DFA state
+// is non-accepting (returns the zero outcome).
 //
 //go:inline
 func determineOutcome[TStateOutcome comparable](
 	subset *dfaStateSubset,
 	stateArray memcore.MarkRaw,
-) (TStateOutcome, error) {
-	var zero TStateOutcome
-
+	invalidOutcome TStateOutcome,
+) TStateOutcome {
 	states := subset.States()
 	if len(states) == 0 {
-		return zero, fmt.Errorf("no states in subset")
+		return invalidOutcome // An empty (dead) state is non-accepting
 	}
 
-	best := ^uint64(0)
-	var bestOutcome TStateOutcome
+	bestStateID := ^uint64(0)     // Start at max uint64
+	bestOutcome := invalidOutcome // Default to the non-accepting outcome
 
 	for _, s := range states {
 		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
-		if s < best {
-			best = s
-			bestOutcome = outcome
+
+		if outcome != invalidOutcome {
+			if s < bestStateID {
+				bestStateID = s
+				bestOutcome = outcome
+			}
 		}
 	}
 
-	return bestOutcome, nil
+	return bestOutcome
 }

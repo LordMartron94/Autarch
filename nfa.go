@@ -40,15 +40,15 @@ func NFACreate[TObservation any, TStateOutcome comparable](
 	// 2. Transitions
 	transitionTable := make(map[[2]uint64][]uint64)
 	for _, transition := range transitions {
-		if transition.symbol.symbolID >= alphabetSize && transition.symbol.symbolID != epsilonID {
-			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.symbol.symbolID, alphabetSize))
+		if transition.Symbol.SymbolID >= alphabetSize && transition.Symbol.SymbolID != AutarchEpsilonID {
+			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.Symbol.SymbolID, alphabetSize))
 		}
 
-		key := [2]uint64{transition.currentState, transition.symbol.symbolID}
+		key := [2]uint64{transition.CurrentState, transition.Symbol.SymbolID}
 		if _, exist := transitionTable[key]; !exist {
-			transitionTable[key] = []uint64{transition.nextState}
+			transitionTable[key] = []uint64{transition.NextState}
 		} else {
-			transitionTable[key] = append(transitionTable[key], transition.nextState)
+			transitionTable[key] = append(transitionTable[key], transition.NextState)
 		}
 	}
 
@@ -77,7 +77,7 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 		if !ok {
 			fmt.Printf("  [%d] <invalid index>\n", i)
 		} else {
-			fmt.Printf("  [%d] symbolID=%d  (%v)\n", i, idx.symbolID, sym)
+			fmt.Printf("  [%d] symbolID=%d  (%v)\n", i, idx.SymbolID, sym)
 		}
 	}
 	fmt.Println()
@@ -128,7 +128,7 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 		symbolID := k[1]
 
 		var symbolDesc string
-		if symbolID == epsilonID {
+		if symbolID == AutarchEpsilonID {
 			symbolDesc = "ε"
 		} else if symbolID < uint64(len(nfa.alphabet)) {
 			sym := nfa.alphabet[symbolID]
@@ -177,13 +177,13 @@ func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, T
 	for _, observation := range input {
 		symbol, ok := nfa.indexer(observation)
 		if !ok {
-			return nil, fmt.Errorf("invalid symbol: %s", symbol.symbolDescription)
+			return nil, fmt.Errorf("invalid symbol: %s", symbol.SymbolDescription)
 		}
 
 		nextSet := make(map[uint64]struct{})
 
 		for _, state := range current {
-			key := [2]uint64{state, symbol.symbolID}
+			key := [2]uint64{state, symbol.SymbolID}
 			for _, ns := range nfa.transitions[key] {
 				nextSet[ns] = struct{}{}
 			}
@@ -228,7 +228,7 @@ func NFATransitionsForStates[TObservation any, TStateOutcome comparable](
 	out := make(map[uint64]struct{})
 
 	for _, s := range states {
-		key := [2]uint64{s, symbol.symbolID}
+		key := [2]uint64{s, symbol.SymbolID}
 		next, exists := nfa.transitions[key]
 		if !exists {
 			continue
@@ -283,7 +283,7 @@ func epsilonClosure[TObservation any, TStateOutcome comparable](
 		s := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		key := [2]uint64{s, epsilonID}
+		key := [2]uint64{s, AutarchEpsilonID}
 		nextStates, exists := nfa.transitions[key]
 		if !exists {
 			continue

@@ -16,6 +16,7 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	nfa *NFA[TSymbol, TStateOutcome],
 	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
 	dfaAllocationFn memarch.AllocationFn,
+	invalidOutcome TStateOutcome,
 ) *DFA[TSymbol, TStateOutcome] {
 
 	// ───────────────────────────────────────────────────────────────
@@ -79,7 +80,7 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	addSubset := func(sub dfaStateSubset) uint64 {
 		id := uint64(len(subsets))
 		subsets = append(subsets, sub)
-		outcome, _ := determineOutcome[TStateOutcome](&sub, stateArray)
+		outcome := determineOutcome[TStateOutcome](&sub, stateArray, invalidOutcome)
 		dfaOutcomes = append(dfaOutcomes, outcome)
 		memstruct.QueuePushUnsafe(worklist, sub)
 		return id
@@ -130,9 +131,9 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 			symbol, _ := indexer(observation)
 
 			dfaTransitions = append(dfaTransitions, Transition[TSymbol]{
-				currentState: currentID,
-				symbol:       symbol,
-				nextState:    nextID,
+				CurrentState: currentID,
+				Symbol:       symbol,
+				NextState:    nextID,
 			})
 		}
 	}

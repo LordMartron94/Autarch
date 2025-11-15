@@ -32,10 +32,10 @@ func TestNFAToDFA(t *testing.T) {
 		},
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
-			{currentState: 0, symbol: symbolA, nextState: 1},
-			{currentState: 0, symbol: symbolB, nextState: 0},
-			{currentState: 1, symbol: symbolA, nextState: 1},
-			{currentState: 1, symbol: symbolB, nextState: 1},
+			{CurrentState: 0, Symbol: symbolA, NextState: 1},
+			{CurrentState: 0, Symbol: symbolB, NextState: 0},
+			{CurrentState: 1, Symbol: symbolA, NextState: 1},
+			{CurrentState: 1, Symbol: symbolB, NextState: 1},
 		},
 		[]uint64{0},
 		[]bool{false, true},
@@ -59,6 +59,7 @@ func TestNFAToDFA(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
+		false,
 	)
 
 	type testCase struct {
@@ -129,11 +130,11 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
 			// State 0 loops on 'a'
-			{currentState: 0, symbol: symbolA, nextState: 0},
+			{CurrentState: 0, Symbol: symbolA, NextState: 0},
 			// Epsilon transition allows moving from 'a's to 'b's
-			{currentState: 0, symbol: epsilonSymbol, nextState: 1},
+			{CurrentState: 0, Symbol: epsilonSymbol, NextState: 1},
 			// State 1 loops on 'b'
-			{currentState: 1, symbol: symbolB, nextState: 1},
+			{CurrentState: 1, Symbol: symbolB, NextState: 1},
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 (for a*) and State 1 (for b*) are accepting
@@ -157,6 +158,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
+		false,
 	)
 
 	type testCase struct {

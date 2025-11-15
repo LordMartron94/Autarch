@@ -34,10 +34,10 @@ func TestNFA(t *testing.T) {
 		},
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
-			{currentState: 0, symbol: symbolA, nextState: 1},
-			{currentState: 0, symbol: symbolB, nextState: 0},
-			{currentState: 1, symbol: symbolA, nextState: 1},
-			{currentState: 1, symbol: symbolB, nextState: 1},
+			{CurrentState: 0, Symbol: symbolA, NextState: 1},
+			{CurrentState: 0, Symbol: symbolB, NextState: 0},
+			{CurrentState: 1, Symbol: symbolA, NextState: 1},
+			{CurrentState: 1, Symbol: symbolB, NextState: 1},
 		},
 		[]uint64{0},
 		[]bool{false, true},
@@ -128,9 +128,9 @@ func TestNFAEpsilon(t *testing.T) {
 		},
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
-			{currentState: 0, symbol: symbolA, nextState: 0},
-			{currentState: 0, symbol: epsilonSymbol, nextState: 1},
-			{currentState: 1, symbol: symbolB, nextState: 1},
+			{CurrentState: 0, Symbol: symbolA, NextState: 0},
+			{CurrentState: 0, Symbol: epsilonSymbol, NextState: 1},
+			{CurrentState: 1, Symbol: symbolB, NextState: 1},
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 and State 1 are both accepting

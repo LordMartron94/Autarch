@@ -34,12 +34,12 @@ func TestDFA(t *testing.T) {
 		},
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
-			{currentState: 0, symbol: symbolA, nextState: 1},
-			{currentState: 0, symbol: symbolB, nextState: 0},
-			{currentState: 1, symbol: symbolA, nextState: 2},
-			{currentState: 1, symbol: symbolB, nextState: 2},
-			{currentState: 2, symbol: symbolA, nextState: 2},
-			{currentState: 2, symbol: symbolB, nextState: 0},
+			{CurrentState: 0, Symbol: symbolA, NextState: 1},
+			{CurrentState: 0, Symbol: symbolB, NextState: 0},
+			{CurrentState: 1, Symbol: symbolA, NextState: 2},
+			{CurrentState: 1, Symbol: symbolB, NextState: 2},
+			{CurrentState: 2, Symbol: symbolA, NextState: 2},
+			{CurrentState: 2, Symbol: symbolB, NextState: 0},
 		},
 		[]bool{false, false, true},
 		func(observation rune) (Symbol[rune], bool) {

@@ -58,29 +58,26 @@ func TestDFAMinimize(t *testing.T) {
 		[]rune{'a', 'b'},
 		[]Transition[rune]{
 			// Start state 0
-			{currentState: 0, symbol: symbolA, nextState: 1},
-			{currentState: 0, symbol: symbolB, nextState: 2},
+			{CurrentState: 0, Symbol: symbolA, NextState: 1},
+			{CurrentState: 0, Symbol: symbolB, NextState: 2},
 			// Equivalent states 1 and 2 (non-accepting)
-			{currentState: 1, symbol: symbolA, nextState: 3},
-			{currentState: 1, symbol: symbolB, nextState: 5},
-			{currentState: 2, symbol: symbolA, nextState: 4},
-			{currentState: 2, symbol: symbolB, nextState: 5},
+			{CurrentState: 1, Symbol: symbolA, NextState: 3},
+			{CurrentState: 1, Symbol: symbolB, NextState: 5},
+			{CurrentState: 2, Symbol: symbolA, NextState: 4},
+			{CurrentState: 2, Symbol: symbolB, NextState: 5},
 			// Equivalent states 3 and 4 (accepting)
-			{currentState: 3, symbol: symbolA, nextState: 3},
-			{currentState: 3, symbol: symbolB, nextState: 5},
-			{currentState: 4, symbol: symbolA, nextState: 4},
-			{currentState: 4, symbol: symbolB, nextState: 5},
+			{CurrentState: 3, Symbol: symbolA, NextState: 3},
+			{CurrentState: 3, Symbol: symbolB, NextState: 5},
+			{CurrentState: 4, Symbol: symbolA, NextState: 4},
+			{CurrentState: 4, Symbol: symbolB, NextState: 5},
 			// Dead state 5 (non-accepting)
-			{currentState: 5, symbol: symbolA, nextState: 5},
-			{currentState: 5, symbol: symbolB, nextState: 5},
+			{CurrentState: 5, Symbol: symbolA, NextState: 5},
+			{CurrentState: 5, Symbol: symbolB, NextState: 5},
 		},
 		// Outcomes for 6 states: 0, 1, 2, 3, 4, 5
 		[]bool{false, false, false, true, true, false},
 		indexer,
 	)
-
-	fmt.Println("Original DFA: ")
-	fmt.Println(DFADebugPrint(originalDFA))
 
 	// ───────────────────────────────────────────────────────────────
 	// 2. Minimize the DFA
@@ -94,10 +91,8 @@ func TestDFAMinimize(t *testing.T) {
 		dfaAllocationFn, // Allocator for the *new* minimal DFA
 		memcore.MemoryUnitBytes(minTempMem),
 		memcore.MemoryUnitBytes(maxTempMem),
+		false,
 	)
-
-	fmt.Println("Minimized DFA: ")
-	fmt.Println(DFADebugPrint(minimizedDFA))
 
 	// ───────────────────────────────────────────────────────────────
 	// 3. Define Test Cases

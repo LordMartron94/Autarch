@@ -56,17 +56,17 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 	transitionArray, _ := memarch.MemArchArrayCreate[uint64](allocFn, numStates*alphabetSize)
 
 	for _, transition := range transitions {
-		if transition.symbol.symbolID >= alphabetSize && transition.symbol.symbolID != epsilonID {
-			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.symbol.symbolID, alphabetSize))
+		if transition.Symbol.SymbolID >= alphabetSize && transition.Symbol.SymbolID != AutarchEpsilonID {
+			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.Symbol.SymbolID, alphabetSize))
 		}
 
-		idx := getTransitionIDX(rowStride, transition.currentState, transition.symbol.symbolID)
+		idx := getTransitionIDX(rowStride, transition.CurrentState, transition.Symbol.SymbolID)
 
 		if memstruct.ArrayItemGetAtUnsafe[uint64](transitionArray, idx) != 0 {
-			panic(fmt.Errorf("cannot have multiple transitions for input symbol %v and state %d", transition.symbol.symbolDescription, transition.currentState))
+			panic(fmt.Errorf("cannot have multiple transitions for input symbol %v and state %d", transition.Symbol.SymbolDescription, transition.CurrentState))
 		}
 
-		memstruct.ArraySetAtUnsafe(transitionArray, idx, transition.nextState)
+		memstruct.ArraySetAtUnsafe(transitionArray, idx, transition.NextState)
 	}
 
 	return &DFA[TObservation, TStateOutcome]{
@@ -89,10 +89,10 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 		symbol, valid := dfa.indexer(observation)
 		if !valid {
 			var zero TStateOutcome
-			return zero, fmt.Errorf("invalid symbol encountered: %s", symbol.symbolDescription)
+			return zero, fmt.Errorf("invalid symbol encountered: %s", symbol.SymbolDescription)
 		}
 
-		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.symbolID)
+		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.SymbolID)
 		newState := arrayCursor.PtrAt(transitionIDX)
 		state = *newState
 	}
@@ -117,7 +117,7 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	for id, obs := range dfa.alphabet {
 		sym, _ := dfa.indexer(obs)
 		// guaranteed deterministic because indexer returns symbolID + description
-		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, sym.symbolDescription))
+		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, sym.SymbolDescription))
 	}
 	sb.WriteString("\n")
 
@@ -182,7 +182,7 @@ func DFATransition[TObservation any, TStateOutcome comparable](
 	arrayCursor memstruct.ArrayCursor[uint64],
 ) uint64 {
 	symbol, _ := dfa.indexer(observation)
-	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.symbolID)
+	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
 	return *newState
 }
