@@ -59,7 +59,6 @@ func TestNFAToDFA(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
-		false,
 	)
 
 	type testCase struct {
@@ -158,7 +157,6 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
-		false,
 	)
 
 	type testCase struct {

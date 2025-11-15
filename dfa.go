@@ -14,8 +14,21 @@ type DFA[TObservation any, TStateOutcome comparable] struct {
 
 	indexer SymbolIndexer[TObservation]
 
+	alphabet     []TObservation
 	numStates    uint64
 	alphabetSize uint64
+}
+
+func DFAStatesGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+	return dfa.states
+}
+
+func DFAIndexerGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
+	return dfa.indexer
+}
+
+func DFAAlphabetGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) []TObservation {
+	return dfa.alphabet
 }
 
 // DFACreate creates a new DFA, creating its data structures using the provided allocation function.
@@ -26,7 +39,6 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 	transitions []Transition[TObservation],
 	states []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
-	invalidStateOutcome TStateOutcome,
 ) *DFA[TObservation, TStateOutcome] {
 
 	alphabetSize := uint64(len(alphabet))
@@ -34,11 +46,10 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 	rowStride := alphabetSize
 
 	// 1. State Outcomes
-	stateTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates+1)
+	stateTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
 	for stateNum, stateOutcome := range states {
 		memstruct.ArraySetAtUnsafe(stateTable, uint64(stateNum), stateOutcome)
 	}
-	memstruct.ArraySetAtUnsafe(stateTable, numStates, invalidStateOutcome)
 
 	// 2. Transitions
 	transitionArray, _ := memarch.MemArchArrayCreate[uint64](allocFn, numStates*alphabetSize)
@@ -63,6 +74,7 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 		indexer:      indexer,
 		numStates:    numStates,
 		alphabetSize: alphabetSize,
+		alphabet:     alphabet,
 	}
 }
 
@@ -75,7 +87,8 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 	for _, observation := range input {
 		symbol, valid := dfa.indexer(observation)
 		if !valid {
-			return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.states, dfa.numStates), fmt.Errorf("invalid symbol encountered: %s", symbol.symbolDescription)
+			var zero TStateOutcome
+			return zero, fmt.Errorf("invalid symbol encountered: %s", symbol.symbolDescription)
 		}
 
 		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.symbolID)

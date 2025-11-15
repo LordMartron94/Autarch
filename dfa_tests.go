@@ -52,7 +52,6 @@ func TestDFA(t *testing.T) {
 				return errSymbol, false
 			}
 		},
-		false, // invalid state
 	)
 
 	type testCase struct {
@@ -102,7 +101,10 @@ func TestDFA(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		outcome, _ := DFARun(dfa, []rune(test.input))
+		outcome, err := DFARun(dfa, []rune(test.input))
+		if err != nil {
+			outcome = false
+		}
 
 		errMsg := fmt.Sprintf("incorrect outcome, expected=%v,got=%v,input=%s", test.expected, outcome, test.input)
 		successMsg := fmt.Sprintf("correct outcome, expected=%v,got=%v,input=%s", test.expected, outcome, test.input)

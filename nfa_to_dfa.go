@@ -2,133 +2,11 @@ package autarch
 
 import (
 	"fmt"
-	"math/bits"
 	"memarch"
 	"memcore"
 	"memforge"
 	"memstruct"
 )
-
-const maxNFAStates uint64 = 256
-const wordsPerSubset uint64 = maxNFAStates / 64
-
-type dfaStateSubset struct {
-	words [wordsPerSubset]uint64
-}
-
-func dfaStateSubsetCreate(states []uint64) *dfaStateSubset {
-	subset := &dfaStateSubset{}
-	for _, state := range states {
-		subset.Add(state)
-	}
-	return subset
-}
-
-//go:inline
-func (s *dfaStateSubset) Add(state uint64) {
-	w := state >> 6
-	b := state & 63
-	s.words[w] |= 1 << b
-}
-
-//go:inline
-func (s *dfaStateSubset) Remove(state uint64) {
-	w := state >> 6
-	b := state & 63
-	s.words[w] &^= 1 << b
-}
-
-//go:inline
-func (s *dfaStateSubset) Has(state uint64) bool {
-	w := state >> 6
-	b := state & 63
-	return (s.words[w] & (1 << b)) != 0
-}
-
-//go:inline
-func (s *dfaStateSubset) Clear() {
-	for i := range s.words {
-		s.words[i] = 0
-	}
-}
-
-//go:inline
-func (s *dfaStateSubset) Union(a, b *dfaStateSubset) {
-	for i := range s.words {
-		s.words[i] = a.words[i] | b.words[i]
-	}
-}
-
-//go:inline
-func (s *dfaStateSubset) Equals(o *dfaStateSubset) bool {
-	for i := range s.words {
-		if s.words[i] != o.words[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// Count returns number of states present in the subset.
-//
-//go:inline
-func (s *dfaStateSubset) Count() uint64 {
-	var c uint64
-	for _, w := range s.words {
-		c += uint64(bits.OnesCount64(w))
-	}
-	return c
-}
-
-//go:inline
-func (s *dfaStateSubset) States() []uint64 {
-	states := make([]uint64, 0)
-
-	for wi, w := range s.words {
-		for w != 0 {
-			bit := bits.TrailingZeros64(w)
-			state := uint64(wi)*64 + uint64(bit)
-
-			states = append(states, state)
-
-			w &= w - 1
-		}
-	}
-
-	return states
-}
-
-// determineOutcome picks the "best" outcome for a subset of NFA states.
-// We use the lowest-indexed NFA state with a non-invalid outcome.
-//
-//go:inline
-func determineOutcome[TStateOutcome comparable](
-	subset *dfaStateSubset,
-	stateArray memcore.MarkRaw,
-	invalidStateOutcome TStateOutcome,
-) TStateOutcome {
-
-	states := subset.States()
-	if len(states) == 0 {
-		return invalidStateOutcome
-	}
-
-	best := ^uint64(0)
-	var bestOutcome TStateOutcome
-
-	for _, s := range states {
-		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
-		if outcome != invalidStateOutcome && s < best {
-			best = s
-			bestOutcome = outcome
-		}
-	}
-
-	if best == ^uint64(0) {
-		return invalidStateOutcome
-	}
-	return bestOutcome
-}
 
 // NFAToDFA transforms an NFA into an equivalent DFA using subset construction.
 // It does NOT use memstruct.HashMap for subset → stateID mapping, to avoid the
@@ -138,7 +16,6 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	nfa *NFA[TSymbol, TStateOutcome],
 	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
 	dfaAllocationFn memarch.AllocationFn,
-	invalidStateOutcome TStateOutcome,
 ) *DFA[TSymbol, TStateOutcome] {
 
 	// ───────────────────────────────────────────────────────────────
@@ -202,7 +79,7 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	addSubset := func(sub dfaStateSubset) uint64 {
 		id := uint64(len(subsets))
 		subsets = append(subsets, sub)
-		outcome := determineOutcome(&sub, stateArray, invalidStateOutcome)
+		outcome, _ := determineOutcome[TStateOutcome](&sub, stateArray)
 		dfaOutcomes = append(dfaOutcomes, outcome)
 		memstruct.QueuePushUnsafe(worklist, sub)
 		return id
@@ -269,6 +146,5 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 		dfaTransitions,
 		dfaOutcomes,
 		indexer,
-		invalidStateOutcome,
 	)
 }
