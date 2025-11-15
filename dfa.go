@@ -211,3 +211,31 @@ func DFAPredecessorSets[TObservation any, TStateOutcome comparable](
 
 	return incoming
 }
+
+// DFAStep advances the DFA by one observation.
+// It returns the next state.
+// It returns an error if the observation is not in the alphabet.
+func DFAStep[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	currentState uint64,
+	observation TObservation,
+	arrayCursor memstruct.ArrayCursor[uint64],
+) (uint64, error) {
+	symbol, valid := dfa.indexer(observation)
+	if !valid {
+		var zero uint64
+		return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
+	}
+
+	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
+	newState := arrayCursor.PtrAt(transitionIDX)
+	return *newState, nil
+}
+
+// DFAStateOutcome returns the outcome (e.g., token type) for a given state.
+func DFAStateOutcome[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) TStateOutcome {
+	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.states, state)
+}
