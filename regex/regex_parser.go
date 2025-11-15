@@ -61,7 +61,7 @@ func insertConcatOperators(tokens []regexToken) ([]regexToken, error) {
 
 func canEndExpr(kind regexTokenKind) bool {
 	switch kind {
-	case tokLiteral, tokCharClass, tokRParen, tokStar, tokPlus, tokQuestion:
+	case tokLiteral, tokCharClass, tokRParen, tokStar, tokPlus, tokQuestion, tokBound, tokDot, tokClassSet:
 		return true
 	default:
 		return false
@@ -70,7 +70,7 @@ func canEndExpr(kind regexTokenKind) bool {
 
 func canStartExpr(kind regexTokenKind) bool {
 	switch kind {
-	case tokLiteral, tokCharClass, tokLParen:
+	case tokLiteral, tokCharClass, tokLParen, tokDot, tokClassSet:
 		return true
 	default:
 		return false
@@ -83,6 +83,8 @@ func canStartExpr(kind regexTokenKind) bool {
 
 func precedence(kind regexTokenKind) int {
 	switch kind {
+	case tokBound:
+		return 4
 	case tokStar, tokPlus, tokQuestion:
 		return 3
 	case tokConcat:
@@ -97,7 +99,7 @@ func precedence(kind regexTokenKind) int {
 func isLeftAssociative(kind regexTokenKind) bool {
 	// postfix unary (* + ?) are left-associative in this usage
 	switch kind {
-	case tokStar, tokPlus, tokQuestion:
+	case tokBound, tokStar, tokPlus, tokQuestion:
 		return true
 	case tokConcat, tokAlt:
 		return true
@@ -108,7 +110,7 @@ func isLeftAssociative(kind regexTokenKind) bool {
 
 func isOperator(kind regexTokenKind) bool {
 	switch kind {
-	case tokStar, tokPlus, tokQuestion, tokConcat, tokAlt:
+	case tokBound, tokStar, tokPlus, tokQuestion, tokConcat, tokAlt:
 		return true
 	default:
 		return false
@@ -146,6 +148,13 @@ func shuntingYard(tokens []regexToken) (*regexAST, error) {
 
 	applyOp := func(op regexToken) error {
 		switch op.kind {
+
+		case tokBound:
+			if len(output) < 1 {
+				return fmt.Errorf("bound {%d,%d} missing operand", op.min, op.max)
+			}
+			a := output[len(output)-1]
+			output[len(output)-1] = astBoundNode(a, op.min, op.max)
 
 		case tokLiteral:
 			return fmt.Errorf("unexpected literal in operator context")
@@ -194,7 +203,6 @@ func shuntingYard(tokens []regexToken) (*regexAST, error) {
 			}
 			a := output[len(output)-1]
 			output[len(output)-1] = astQuestionNode(a)
-
 		default:
 			return fmt.Errorf("unknown operator kind: %v", op.kind)
 		}
@@ -212,7 +220,7 @@ func shuntingYard(tokens []regexToken) (*regexAST, error) {
 			output = append(output, astLiteralNode(tok.value))
 
 		case tokCharClass:
-			output = append(output, astClassNode(tok.class))
+			output = append(output, astClassNode(tok.class, tok.negated))
 
 		// ------------------------------
 		// Parentheses
@@ -238,7 +246,7 @@ func shuntingYard(tokens []regexToken) (*regexAST, error) {
 		// ------------------------------
 		// Operators
 		// ------------------------------
-		case tokStar, tokPlus, tokQuestion, tokConcat, tokAlt:
+		case tokStar, tokPlus, tokQuestion, tokConcat, tokAlt, tokBound:
 			for {
 				top, ok := peekOp()
 				if !ok || top.kind == tokLParen {
@@ -260,8 +268,12 @@ func shuntingYard(tokens []regexToken) (*regexAST, error) {
 			}
 			pushOp(tok)
 
+		case tokDot:
+			output = append(output, astDotNode())
+		case tokClassSet:
+			output = append(output, astClassSetNode(tok.value))
+
 		case tokEOF:
-			// We'll handle at end
 			continue
 
 		default:

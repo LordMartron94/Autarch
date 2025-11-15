@@ -14,6 +14,9 @@ const (
 	astPlus                          // A+
 	astQuestion                      // A?
 	astCharClass                     // [abc] or [a-z]
+	astDot
+	astClassSet
+	astBound
 )
 
 // regexAST represents a node in the regex syntax tree.
@@ -24,9 +27,14 @@ type regexAST struct {
 	value rune
 	class []rune
 
+	min int
+	max int
+
 	// child nodes
 	left  *regexAST
 	right *regexAST
+
+	negated bool
 }
 
 // ------------------------------------------------------------
@@ -77,9 +85,30 @@ func astQuestionNode(a *regexAST) *regexAST {
 	}
 }
 
-func astClassNode(chars []rune) *regexAST {
+func astClassNode(chars []rune, negated bool) *regexAST {
 	return &regexAST{
-		kind:  astCharClass,
-		class: chars,
+		kind:    astCharClass,
+		class:   chars,
+		negated: negated,
+	}
+}
+
+func astDotNode() *regexAST {
+	return &regexAST{kind: astDot}
+}
+
+func astClassSetNode(r rune) *regexAST {
+	return &regexAST{
+		kind:  astClassSet,
+		value: r,
+	}
+}
+
+func astBoundNode(a *regexAST, min, max int) *regexAST {
+	return &regexAST{
+		kind: astBound,
+		left: a,
+		min:  min,
+		max:  max,
 	}
 }

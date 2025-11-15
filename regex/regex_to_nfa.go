@@ -47,7 +47,7 @@ func RegexToNFA[TStateOutcome comparable](
 	states[fragment.accept] = acceptToken
 
 	// 7. Normalize transitions: assign symbolID from indexer
-	nfaTransitions, err := normalizeTransitions(fragment.transitions, indexer)
+	nfaTransitions, err := normalizeTransitions(fragment.transitions, indexer, alphabet)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,8 @@ func collectAlphabet(transitions []autarch.Transition[rune]) []rune {
 	set := make(map[rune]struct{})
 
 	for _, tr := range transitions {
-		if tr.Symbol.SymbolID == autarch.AutarchEpsilonID {
+		if tr.Symbol.SymbolID == autarch.AutarchEpsilonID ||
+			tr.Symbol.SymbolID == autarch.AutarchWildcardID {
 			continue
 		}
 		r := []rune(tr.Symbol.SymbolDescription)
@@ -138,14 +139,58 @@ func buildIndexer(alphabet []rune) autarch.SymbolIndexer[rune] {
 func normalizeTransitions(
 	transitions []autarch.Transition[rune],
 	indexer autarch.SymbolIndexer[rune],
+	alphabet []rune,
 ) ([]autarch.Transition[rune], error) {
 
 	out := make([]autarch.Transition[rune], 0, len(transitions))
 
+	allSymbols := make([]autarch.Symbol[rune], len(alphabet))
+	for i, r := range alphabet {
+		sym, _ := indexer(r)
+		allSymbols[i] = sym
+	}
+
 	for _, tr := range transitions {
-		// Epsilon
 		if tr.Symbol.SymbolID == autarch.AutarchEpsilonID {
 			out = append(out, tr)
+			continue
+		}
+
+		if tr.Symbol.SymbolID == autarch.AutarchWildcardID {
+
+			// Case 1: It's a "dot"
+			if tr.Symbol.SymbolDescription == "." {
+				for _, sym := range allSymbols {
+					if sym.SymbolDescription == "\n" {
+						continue
+					}
+					out = append(out, autarch.Transition[rune]{
+						Symbol:       sym,
+						CurrentState: tr.CurrentState,
+						NextState:    tr.NextState,
+					})
+				}
+				continue
+			}
+
+			// Case 2: It's a negated class [^...]
+			// The excluded runes are in the description.
+			excludedRunes := make(map[rune]struct{})
+			for _, r := range tr.Symbol.SymbolDescription {
+				excludedRunes[r] = struct{}{}
+			}
+
+			// Add a transition for every symbol *not* in the excluded set.
+			for _, sym := range allSymbols {
+				r := []rune(sym.SymbolDescription)[0]
+				if _, isExcluded := excludedRunes[r]; !isExcluded {
+					out = append(out, autarch.Transition[rune]{
+						Symbol:       sym,
+						CurrentState: tr.CurrentState,
+						NextState:    tr.NextState,
+					})
+				}
+			}
 			continue
 		}
 

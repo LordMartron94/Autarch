@@ -1,6 +1,9 @@
 package regex
 
-import "autarch"
+import (
+	"autarch"
+	"fmt"
+)
 
 // Thompson ε-NFA fragment.
 type nfaFragment struct {
@@ -41,6 +44,9 @@ func literalTransition(from, to uint64, r rune) autarch.Transition[rune] {
 func thompsonBuild(ast *regexAST, stateCounter *uint64) nfaFragment {
 	switch ast.kind {
 
+	case astBound:
+		return buildBound(ast, stateCounter)
+
 	case astLiteral:
 		return buildLiteral(ast, stateCounter)
 
@@ -61,6 +67,11 @@ func thompsonBuild(ast *regexAST, stateCounter *uint64) nfaFragment {
 
 	case astQuestion:
 		return buildQuestion(ast, stateCounter)
+
+	case astDot:
+		return buildDot(ast, stateCounter)
+	case astClassSet:
+		return buildClassSet(ast, stateCounter)
 
 	default:
 		panic("unknown AST kind in thompsonBuild")
@@ -98,18 +109,40 @@ func buildLiteral(ast *regexAST, c *uint64) nfaFragment {
 // ------------------------------------------------------------
 
 func buildCharClass(ast *regexAST, c *uint64) nfaFragment {
+	if !ast.negated {
+		s := newState(c)
+		t := newState(c)
+
+		trans := make([]autarch.Transition[rune], 0, len(ast.class))
+		for _, r := range ast.class {
+			trans = append(trans, literalTransition(s, t, r))
+		}
+
+		return nfaFragment{
+			start:       s,
+			accept:      t,
+			transitions: trans,
+		}
+	}
+
 	s := newState(c)
 	t := newState(c)
 
-	trans := make([]autarch.Transition[rune], 0, len(ast.class))
-	for _, r := range ast.class {
-		trans = append(trans, literalTransition(s, t, r))
+	symbol := autarch.SymbolCreate[rune](
+		string(ast.class),
+		autarch.AutarchWildcardID,
+	)
+
+	trans := autarch.Transition[rune]{
+		Symbol:       symbol,
+		CurrentState: s,
+		NextState:    t,
 	}
 
 	return nfaFragment{
 		start:       s,
 		accept:      t,
-		transitions: trans,
+		transitions: []autarch.Transition[rune]{trans},
 	}
 }
 
@@ -259,6 +292,110 @@ func buildQuestion(ast *regexAST, c *uint64) nfaFragment {
 		accept:      t,
 		transitions: trans,
 	}
+}
+
+func buildDot(ast *regexAST, c *uint64) nfaFragment {
+	s := newState(c)
+	t := newState(c)
+
+	dotTransition := autarch.Transition[rune]{
+		Symbol: autarch.SymbolCreate[rune](
+			".",
+			autarch.AutarchWildcardID,
+		),
+		CurrentState: s,
+		NextState:    t,
+	}
+
+	return nfaFragment{
+		start:       s,
+		accept:      t,
+		transitions: []autarch.Transition[rune]{dotTransition},
+	}
+}
+
+// buildClassSet expands \d, \s, etc. into a real char class
+func buildClassSet(ast *regexAST, c *uint64) nfaFragment {
+	var runes []rune
+	switch ast.value {
+	case 'd':
+		runes = []rune("0123456789")
+	case 's':
+		runes = []rune(" \t\n\r\f\v")
+	default:
+		panic(fmt.Sprintf("unknown class set: %c", ast.value))
+	}
+
+	return buildCharClass(&regexAST{
+		kind:  astCharClass,
+		class: runes,
+	}, c)
+}
+
+func fragmentConcat(left, right nfaFragment) nfaFragment {
+	trans := append(left.transitions,
+		append([]autarch.Transition[rune]{epsilonTransition(left.accept, right.start)},
+			right.transitions...)...)
+
+	return nfaFragment{
+		start:       left.start,
+		accept:      right.accept,
+		transitions: trans,
+	}
+}
+
+func buildBound(ast *regexAST, c *uint64) nfaFragment {
+	min := ast.min
+	max := ast.max
+	subAST := ast.left
+
+	if min == 0 && max == 0 {
+		s := newState(c)
+		return nfaFragment{
+			start:       s,
+			accept:      s,
+			transitions: []autarch.Transition[rune]{},
+		}
+	}
+
+	var finalFragment nfaFragment
+
+	if min > 0 {
+		finalFragment = thompsonBuild(subAST, c)
+		for i := 1; i < min; i++ {
+			nextFrag := thompsonBuild(subAST, c)
+			finalFragment = fragmentConcat(finalFragment, nextFrag)
+		}
+	}
+
+	if min == max {
+		return finalFragment
+	}
+
+	if max == -1 {
+		starAST := &regexAST{kind: astStar, left: subAST}
+		starFrag := thompsonBuild(starAST, c)
+
+		if min == 0 {
+			return starFrag
+		}
+		return fragmentConcat(finalFragment, starFrag)
+	}
+
+	if min == 0 {
+		finalFragment = thompsonBuild(&regexAST{kind: astQuestion, left: subAST}, c)
+		for i := 1; i < max; i++ {
+			optFrag := thompsonBuild(&regexAST{kind: astQuestion, left: subAST}, c)
+			finalFragment = fragmentConcat(finalFragment, optFrag)
+		}
+		return finalFragment
+	}
+
+	for i := 0; i < (max - min); i++ {
+		optFrag := thompsonBuild(&regexAST{kind: astQuestion, left: subAST}, c)
+		finalFragment = fragmentConcat(finalFragment, optFrag)
+	}
+	return finalFragment
 }
 
 // ------------------------------------------------------------

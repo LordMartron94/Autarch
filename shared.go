@@ -7,6 +7,7 @@ import (
 )
 
 const AutarchEpsilonID = ^uint64(0)
+const AutarchWildcardID = ^uint64(1)
 
 // SymbolIndexer must return the symbol for a given observation.
 // It should return false when the observation is not included in the language's alphabet.
