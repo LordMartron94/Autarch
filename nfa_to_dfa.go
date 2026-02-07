@@ -138,12 +138,27 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 			panic("NFAToDFA: subset popped from queue but not present in subset list")
 		}
 
-		// For each observation, compute the target subset
-		for _, observation := range alphabet {
+		// For each symbol in the alphabet, compute the target subset
+		for symbolID := uint64(0); symbolID < uint64(len(alphabet)); symbolID++ {
+			// Directly look up transitions by symbol ID (no need for observations)
+			nfaMoves := make(map[uint64]struct{})
+			for _, state := range subset.States() {
+				key := [2]uint64{state, symbolID}
+				nextStates, exists := nfa.transitions[key]
+				if exists {
+					for _, ns := range nextStates {
+						nfaMoves[ns] = struct{}{}
+					}
+				}
+			}
 
-			nfaMoves, _ := NFATransitionsForStates(nfa, subset.States(), observation)
-			nfaClosure := NFAEpsilonClosureCompute(nfa, nfaMoves)
+			// Convert to slice for epsilon closure
+			moveSlice := make([]uint64, 0, len(nfaMoves))
+			for ns := range nfaMoves {
+				moveSlice = append(moveSlice, ns)
+			}
 
+			nfaClosure := NFAEpsilonClosureCompute(nfa, moveSlice)
 			newSubset := *dfaStateSubsetCreate(nfaClosure)
 
 			// Check if we've seen this subset before
@@ -152,7 +167,9 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 				nextID = addSubset(newSubset)
 			}
 
-			symbol, _ := indexer(observation)
+			// Create symbol from the symbol definition
+			symDef := alphabet[symbolID]
+			symbol := SymbolCreate[TSymbol](symDef.Name, symbolID)
 
 			dfaTransitions = append(dfaTransitions, Transition[TSymbol]{
 				CurrentState: currentID,

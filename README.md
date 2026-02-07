@@ -46,10 +46,6 @@ autarch
   └── memforge (allocator implementations)
 ```
 
-The library is used by:
-- **lexarch**: Lexical analysis and tokenization
-- **matcharch**: Pattern matching systems
-
 ## Core Types
 
 ### `NFA[TObservation, TStateOutcome]`
@@ -74,15 +70,12 @@ import (
 )
 
 // Create alphabet and indexer
-alphabet := []rune{'a', 'b', 'c'}
-indexer := func(r rune) (autarch.Symbol[rune], bool) {
-    for i, sym := range alphabet {
-        if sym == r {
-            return autarch.SymbolCreate[rune](string(r), uint64(i)), true
-        }
-    }
-    return autarch.Symbol[rune]{}, false
+alphabet := []autarch.SymbolDefinition[rune]{
+    {ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
+    {ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
+    {ID: 2, Name: "c", Match: func(r rune) bool { return r == 'c' }},
 }
+indexer := autarch.SymbolIndexerBuild(alphabet)
 
 // Define transitions: state 0 -> state 1 on 'a', state 1 -> state 2 on 'b'
 transitions := []autarch.Transition[rune]{
@@ -159,9 +152,112 @@ outcome, err := autarch.DFARun(minimized, []rune{'a', 'b'})
 
 **`Symbol[TObservation]`**: Represents a symbol in the alphabet with ID and description.
 
+**`SymbolDefinition[TObservation]`**: Represents a symbol definition with ID, name, and match predicate.
+
+**`SymbolKind`**: Enum representing symbol types (literal, range, class, wildcard, epsilon).
+
+**`SymbolKey`**: Struct containing SymbolKind and Hash for unique symbol identity.
+
 **`Transition[TObservation]`**: Defines a state transition with current state, symbol, and next state.
 
 **`SymbolIndexer[TObservation]`**: Function type mapping observations to symbols.
+
+## Pattern Builder (regula)
+
+The `autarch/pattern` package provides a fluent API for building regular expression-like patterns
+that can be compiled into NFAs. This eliminates the need to manually construct transitions and
+alphabet definitions for common pattern matching scenarios.
+
+### Key Features
+
+- **Fluent API**: Chain operations to build complex patterns (e.g., `Literal('a').Then(Class(Range('0', '9'))).Star()`)
+- **Type-Safe**: Generic over observation types (runes, bytes, custom types)
+- **Automatic Symbol Management**: Deduplicates symbols and builds alphabet automatically
+- **Thompson's Construction**: Uses proven algorithm for NFA construction
+- **Predefined Classes**: Common character classes (Digit, Lower, Upper, Word) available
+
+### Building Patterns
+
+Patterns are built using a combination of:
+- **Literals**: Exact sequences (`Literal('h', 'e', 'l', 'l', 'o')`)
+- **Character Classes**: Ranges of observations (`Class(Range('0', '9'))`)
+- **Combinators**: Concatenation (`Then`), alternation (`Or`), repetition (`Star`, `Plus`, `Optional`, `Repeat`)
+- **Helpers**: Multi-expression builders (`Sequence`, `AnyOf`)
+
+### Example: Building a Pattern
+
+```go
+import (
+    "autarch"
+    "autarch/pattern"
+    "memarch"
+)
+
+// Build a pattern: letter followed by zero or more letters/digits/underscores
+identifierPattern := pattern.Class(
+    pattern.Range('a', 'z'),
+    pattern.Range('A', 'Z'),
+).Then(
+    pattern.Class(
+        pattern.Range('a', 'z'),
+        pattern.Range('A', 'Z'),
+        pattern.Range('0', '9'),
+        pattern.Range('_', '_'),
+    ).Star(),
+)
+
+// Or use predefined classes
+identifierPattern := pattern.Lower.Or(pattern.Upper).Then(
+    pattern.Word.Star(),
+)
+
+// Compile to NFA
+nfa := pattern.RegulaCompileToNFA(
+    allocFn,
+    identifierPattern,
+    TokenIdentifier,  // accept outcome
+    TokenInvalid,     // invalid outcome
+)
+
+// Convert to DFA for efficient execution
+dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, TokenInvalid)
+```
+
+### Pattern Builder Functions
+
+**Basic Constructors:**
+- `Literal[TObservation](values...)` - Matches exact sequence
+- `Class[TObservation](ranges...)` - Matches any observation in ranges
+- `Range[TObservation](lo, hi)` - Creates a character range
+
+**Combinators (methods on `regulaAST`):**
+- `Then(b)` - Concatenation (a then b)
+- `Or(b)` - Alternation (a or b)
+- `Star()` - Zero or more repetitions
+- `Plus()` - One or more repetitions
+- `Optional()` - Zero or one repetition
+- `Repeat(min, max)` - Bounded repetition
+
+**Multi-Expression Builders:**
+- `Sequence(exprs...)` - Concatenates multiple expressions
+- `AnyOf(exprs...)` - Alternation of multiple expressions
+
+**Predefined Classes:**
+- `pattern.Digit` - Matches '0'-'9'
+- `pattern.Lower` - Matches 'a'-'z'
+- `pattern.Upper` - Matches 'A'-'Z'
+- `pattern.Word` - Matches letters, digits, and underscore
+
+### Compilation
+
+The `RegulaCompileToNFA` function compiles a pattern AST into an NFA:
+- Automatically collects and deduplicates symbols
+- Builds alphabet with stable symbol IDs
+- Constructs NFA using Thompson's algorithm
+- Returns NFA ready for execution or DFA conversion
+
+**Time Complexity**: O(n) where n is AST nodes
+**Space Complexity**: O(s + t) where s is states, t is transitions
 
 ## Use Cases
 
@@ -221,6 +317,12 @@ Computed using depth-first search with a stack-based approach. The algorithm han
 ### Building a Simple Lexer
 
 ```go
+import (
+    "autarch"
+    "autarch/pattern"
+    "memarch"
+)
+
 // Define token types
 type TokenType int
 const (
@@ -230,13 +332,29 @@ const (
     TokenKeyword
 )
 
-// Create NFA for numbers (simplified: [0-9]+)
-// ... construct NFA with transitions for digits ...
+// Build patterns using the regula pattern builder
+numberPattern := pattern.Digit.Plus()  // [0-9]+
+identifierPattern := pattern.Class(
+    pattern.Range('a', 'z'),
+    pattern.Range('A', 'Z'),
+).Then(pattern.Word.Star())  // [a-zA-Z][a-zA-Z0-9_]*
 
-// Create NFA for identifiers ([a-zA-Z][a-zA-Z0-9]*)
-// ... construct NFA with transitions for letters and digits ...
+// Compile patterns to NFAs
+numberNFA := pattern.RegulaCompileToNFA(
+    allocFn,
+    numberPattern,
+    TokenNumber,
+    TokenInvalid,
+)
 
-// Merge NFAs
+identifierNFA := pattern.RegulaCompileToNFA(
+    allocFn,
+    identifierPattern,
+    TokenIdentifier,
+    TokenInvalid,
+)
+
+// Merge NFAs (alternation of all token patterns)
 merged := autarch.NFAMergeOr(
     numberNFA,
     identifierNFA,
@@ -245,7 +363,7 @@ merged := autarch.NFAMergeOr(
     func(r rune) rune { return r }, // key function
 )
 
-// Convert to DFA and minimize
+// Convert to DFA and minimize for efficient execution
 dfa := autarch.NFAToDFA(merged, minTemp, maxTemp, allocFn, TokenInvalid)
 minimized := autarch.DFAMinimize(dfa, allocFn, minTemp, maxTemp, TokenInvalid)
 

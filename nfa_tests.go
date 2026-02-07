@@ -26,13 +26,18 @@ func TestNFA(t *testing.T) {
 
 	symbolA := SymbolCreate[rune]("a", 0)
 	symbolB := SymbolCreate[rune]("b", 1)
-	errSymbol := SymbolCreate[rune]("error", 2)
+
+	alphabet := []SymbolDefinition[rune]{
+		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
+		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
+	}
+	indexer := SymbolIndexerBuild(alphabet)
 
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
 		},
-		[]rune{'a', 'b'},
+		alphabet,
 		[]Transition[rune]{
 			{CurrentState: 0, Symbol: symbolA, NextState: 1},
 			{CurrentState: 0, Symbol: symbolB, NextState: 0},
@@ -41,16 +46,7 @@ func TestNFA(t *testing.T) {
 		},
 		[]uint64{0},
 		[]bool{false, true},
-		func(observation rune) (Symbol[rune], bool) {
-			switch observation {
-			case 'a':
-				return symbolA, true
-			case 'b':
-				return symbolB, true
-			default:
-				return errSymbol, false
-			}
-		},
+		indexer,
 	)
 
 	type testCase struct {
@@ -120,13 +116,18 @@ func TestNFAEpsilon(t *testing.T) {
 	symbolA := SymbolCreate[rune]("a", 0)
 	symbolB := SymbolCreate[rune]("b", 1)
 	epsilonSymbol := EpsilonSymbolCreate[rune]() // Epsilon is back
-	errSymbol := SymbolCreate[rune]("error", 2)
+
+	alphabet := []SymbolDefinition[rune]{
+		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
+		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
+	}
+	indexer := SymbolIndexerBuild(alphabet)
 
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
 		},
-		[]rune{'a', 'b'},
+		alphabet,
 		[]Transition[rune]{
 			{CurrentState: 0, Symbol: symbolA, NextState: 0},
 			{CurrentState: 0, Symbol: epsilonSymbol, NextState: 1},
@@ -134,16 +135,7 @@ func TestNFAEpsilon(t *testing.T) {
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 and State 1 are both accepting
-		func(observation rune) (Symbol[rune], bool) {
-			switch observation {
-			case 'a':
-				return symbolA, true
-			case 'b':
-				return symbolB, true
-			default:
-				return errSymbol, false
-			}
-		},
+		indexer,
 	)
 
 	type testCase struct {

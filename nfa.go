@@ -41,7 +41,7 @@ type NFA[TObservation any, TStateOutcome comparable] struct {
 	states      memcore.MarkRaw        // Array[TStateOutcome]
 	transitions map[[2]uint64][]uint64 // TODO - maybe replace this with a manually allocated data structure? This would require dynamically sized structures, which I do not want to implement yet.
 
-	alphabet       []TObservation
+	alphabet       []SymbolDefinition[TObservation]
 	startingStates []uint64
 
 	indexer   SymbolIndexer[TObservation]
@@ -76,7 +76,7 @@ Edge cases:
 */
 func NFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
-	alphabet []TObservation,
+	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
 	startingStates []uint64,
 	states []TStateOutcome,
@@ -147,13 +147,8 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	// Alphabet section
 	// -------------------------------------------------------
 	fmt.Println("Alphabet:")
-	for i, sym := range nfa.alphabet {
-		idx, ok := nfa.indexer(sym)
-		if !ok {
-			fmt.Printf("  [%d] <invalid index>\n", i)
-		} else {
-			fmt.Printf("  [%d] symbolID=%d  (%v)\n", i, idx.SymbolID, sym)
-		}
+	for i, symDef := range nfa.alphabet {
+		fmt.Printf("  [%d] symbolID=%d  name=%s\n", i, symDef.ID, symDef.Name)
 	}
 	fmt.Println()
 
@@ -206,8 +201,8 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 		if symbolID == AutarchEpsilonID {
 			symbolDesc = "ε"
 		} else if symbolID < uint64(len(nfa.alphabet)) {
-			sym := nfa.alphabet[symbolID]
-			symbolDesc = fmt.Sprintf("%v", sym)
+			symDef := nfa.alphabet[symbolID]
+			symbolDesc = symDef.Name
 		} else {
 			symbolDesc = fmt.Sprintf("<invalid symbol id=%d>", symbolID)
 		}
@@ -316,7 +311,7 @@ Edge cases:
 - Empty alphabet means no valid input symbols
 - Alphabet order determines symbol ID assignment
 */
-func NFAAlphabetGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []TObservation {
+func NFAAlphabetGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
 	return nfa.alphabet
 }
 
@@ -347,20 +342,20 @@ Edge cases:
 func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome], input []TObservation) ([]TStateOutcome, error) {
 	current := epsilonClosure(nfa, nfa.startingStates)
 
-	// assert.go:10: Assertion failure: incorrect outcome, expected=false, got=true, input=b
-
 	for _, observation := range input {
-		symbol, ok := nfa.indexer(observation)
-		if !ok {
-			return nil, fmt.Errorf("invalid symbol: %s", symbol.SymbolDescription)
+		symbols := nfa.indexer(observation)
+		if len(symbols) == 0 {
+			return nil, fmt.Errorf("invalid symbol: %v", observation)
 		}
 
 		nextSet := make(map[uint64]struct{})
 
 		for _, state := range current {
-			key := [2]uint64{state, symbol.SymbolID}
-			for _, ns := range nfa.transitions[key] {
-				nextSet[ns] = struct{}{}
+			for _, symbol := range symbols {
+				key := [2]uint64{state, symbol.SymbolID}
+				for _, ns := range nfa.transitions[key] {
+					nextSet[ns] = struct{}{}
+				}
 			}
 		}
 
@@ -440,22 +435,24 @@ func NFATransitionsForStates[TObservation any, TStateOutcome comparable](
 	states []uint64,
 	observation TObservation,
 ) ([]uint64, error) {
-	symbol, ok := nfa.indexer(observation)
-	if !ok {
+	symbols := nfa.indexer(observation)
+	if len(symbols) == 0 {
 		return nil, fmt.Errorf("invalid symbol: %v", observation)
 	}
 
 	out := make(map[uint64]struct{})
 
 	for _, s := range states {
-		key := [2]uint64{s, symbol.SymbolID}
-		next, exists := nfa.transitions[key]
-		if !exists {
-			continue
-		}
+		for _, symbol := range symbols {
+			key := [2]uint64{s, symbol.SymbolID}
+			next, exists := nfa.transitions[key]
+			if !exists {
+				continue
+			}
 
-		for _, ns := range next {
-			out[ns] = struct{}{}
+			for _, ns := range next {
+				out[ns] = struct{}{}
+			}
 		}
 	}
 

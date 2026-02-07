@@ -229,14 +229,13 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	// Outcomes per block
 	minOut := make([]TStateOutcome, blockCount)
 	for bid := range P {
-		out := determineOutcome[TStateOutcome](&P[bid], stateArray, invalidOutcome)
+		out := determineOutcome(&P[bid], stateArray, invalidOutcome)
 		minOut[bid] = out
 	}
 
 	// Build transitions
 	minTransitions := make([]Transition[TObservation], 0, blockCount*uint64(alphabetSize))
 
-	cursor := DFACursorGet(dfa)
 	for bid, B := range P {
 		sts := B.States()
 		if len(sts) == 0 {
@@ -245,17 +244,18 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 
 		representative := sts[0]
 
-		for _, obs := range alphabet {
-			sym, ok := indexer(obs)
-			if !ok {
-				panic("DFAMinimize: symbol outside DFA alphabet")
-			}
+		for symbolID := uint64(0); symbolID < uint64(len(alphabet)); symbolID++ {
+			symDef := alphabet[symbolID]
+			symbol := SymbolCreate[TObservation](symDef.Name, symbolID)
 
-			next := DFATransition(dfa, obs, representative, cursor)
+			// For DFA minimization, we use the transition table directly by symbol ID
+			transitionIDX := getTransitionIDX(dfa.alphabetSize, representative, symbolID)
+			nextState := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, transitionIDX)
+
 			minTransitions = append(minTransitions, Transition[TObservation]{
 				CurrentState: uint64(bid),
-				Symbol:       sym,
-				NextState:    stateToBlock[next],
+				Symbol:       symbol,
+				NextState:    stateToBlock[nextState],
 			})
 		}
 	}

@@ -1,7 +1,6 @@
 package autarch
 
 import (
-	"fmt"
 	"memarch"
 	"memstruct"
 )
@@ -9,158 +8,130 @@ import (
 /*
 NFAMergeOr combines two NFAs into a single NFA recognizing the union of their languages.
 
-The function creates a new start state with epsilon transitions to both NFAs'
-starting states, effectively creating an automaton that accepts strings matching
-either input NFA. State IDs from nfaA are preserved with lower values than nfaB.
+Symbol definitions are not deduplicated. Each NFA’s alphabet is preserved and
+assigned new global symbol IDs.
 
-Use cases:
-- Combining multiple pattern matchers
-- Building lexers with multiple token types
-- Creating union automata from component NFAs
-
-Time complexity: O(sa + sb + ta + tb) where s is states, t is transitions
-Space complexity: O(sa + sb + ta + tb) for merged automaton
-
-Prerequisites:
-- nfaA and nfaB must be valid NFA instances
-- allocFn must provide memory for the merged NFA
-- invalidState must be distinct from valid state outcomes
-- keyFn must produce unique keys for distinct observations
-
-Edge cases:
-- Empty alphabets are merged correctly
-- Overlapping alphabets are deduplicated via keyFn
-- Epsilon transitions are preserved from both NFAs
-- New start state (0) is non-accepting
+Semantic symbol reuse must be handled at the Regula/compiler layer.
 */
-func NFAMergeOr[TObservation any, TKey comparable, TStateOutcome comparable](
+func NFAMergeOr[TObservation any, TStateOutcome comparable](
 	nfaA *NFA[TObservation, TStateOutcome],
 	nfaB *NFA[TObservation, TStateOutcome],
 	allocFn memarch.AllocationFn,
 	invalidState TStateOutcome,
-	keyFn func(TObservation) TKey,
 ) *NFA[TObservation, TStateOutcome] {
 
-	// -----------------------------------------------------------------
-	// 1. Build Merged Alphabet & New Indexer
-	// -----------------------------------------------------------------
+	// ------------------------------------------------------------
+	// 1. Merge alphabet (no semantic deduplication)
+	// ------------------------------------------------------------
 
-	newAlphabet := make([]TObservation, 0, len(nfaA.alphabet)+len(nfaB.alphabet))
-	globalKeyMap := make(map[TKey]uint64)
+	newAlphabet := make(
+		[]SymbolDefinition[TObservation],
+		0,
+		len(nfaA.alphabet)+len(nfaB.alphabet),
+	)
 
-	// Add A's alphabet
-	for _, obs := range nfaA.alphabet {
-		key := keyFn(obs)
-		if _, exists := globalKeyMap[key]; !exists {
-			globalKeyMap[key] = uint64(len(newAlphabet))
-			newAlphabet = append(newAlphabet, obs)
-		}
+	newAlphabet = append(newAlphabet, nfaA.alphabet...)
+	newAlphabet = append(newAlphabet, nfaB.alphabet...)
+
+	newIndexer := SymbolIndexerBuild(newAlphabet)
+
+	// ------------------------------------------------------------
+	// 2. Build symbol ID remaps
+	// ------------------------------------------------------------
+
+	remapA := make(map[uint64]uint64, len(nfaA.alphabet)+1)
+	remapB := make(map[uint64]uint64, len(nfaB.alphabet)+1)
+
+	for i := range nfaA.alphabet {
+		remapA[uint64(i)] = uint64(i)
 	}
-	// Add B's alphabet
-	for _, obs := range nfaB.alphabet {
-		key := keyFn(obs)
-		if _, exists := globalKeyMap[key]; !exists {
-			globalKeyMap[key] = uint64(len(newAlphabet))
-			newAlphabet = append(newAlphabet, obs)
-		}
-	}
-
-	// Create new indexer based on the key map
-	newIndexer := func(observation TObservation) (Symbol[TObservation], bool) {
-		key := keyFn(observation)
-		id, ok := globalKeyMap[key]
-		if !ok {
-			return Symbol[TObservation]{}, false
-		}
-		// The description isn't critical, but we can make one.
-		return SymbolCreate[TObservation](fmt.Sprintf("%v", observation), id), true
+	for i := range nfaB.alphabet {
+		remapB[uint64(i)] = uint64(len(nfaA.alphabet) + i)
 	}
 
-	// -----------------------------------------------------------------
-	// 2. Build Local-to-Global SymbolID Remapping Tables
-	// -----------------------------------------------------------------
+	remapA[AutarchEpsilonID] = AutarchEpsilonID
+	remapB[AutarchEpsilonID] = AutarchEpsilonID
 
-	remapA := buildSymbolRemap(nfaA, globalKeyMap, keyFn)
-	remapB := buildSymbolRemap(nfaB, globalKeyMap, keyFn)
+	// ------------------------------------------------------------
+	// 3. Build new state list
+	// ------------------------------------------------------------
 
-	// -----------------------------------------------------------------
-	// 3. Build New State List
-	// Layout: [NewStart (ID 0), ...nfaA states..., ...nfaB states...]
-	// -----------------------------------------------------------------
-
-	offsetA := uint64(1)          // nfaA's states start at ID 1
-	offsetB := nfaA.numStates + 1 // nfaB's states start after nfaA's
+	offsetA := uint64(1)
+	offsetB := offsetA + nfaA.numStates
 
 	newNumStates := nfaA.numStates + nfaB.numStates + 1
 	newStates := make([]TStateOutcome, newNumStates)
-	newStates[0] = invalidState // The new start state is not accepting
 
-	// Copy A's states
+	newStates[0] = invalidState
+
 	statesA := NFAStatesGet(nfaA)
 	for i := uint64(0); i < nfaA.numStates; i++ {
 		newStates[i+offsetA] = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](statesA, i)
 	}
 
-	// Copy B's states
 	statesB := NFAStatesGet(nfaB)
 	for i := uint64(0); i < nfaB.numStates; i++ {
 		newStates[i+offsetB] = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](statesB, i)
 	}
 
-	// -----------------------------------------------------------------
-	// 4. Build New Transition List (with remapped state & symbol IDs)
-	// -----------------------------------------------------------------
+	// ------------------------------------------------------------
+	// 4. Merge transitions
+	// ------------------------------------------------------------
 
 	newTransitions := make([]Transition[TObservation], 0)
 	epsilon := EpsilonSymbolCreate[TObservation]()
 
-	// Add A's transitions, remapped
 	for key, nextStates := range nfaA.transitions {
-		localCurrent, localSymbolID := key[0], key[1]
-		symbol := remapTransitionSymbol(localSymbolID, remapA, nfaA.alphabet)
+		from, sym := key[0], key[1]
+		globalSym := remapA[sym]
 
-		for _, localNext := range nextStates {
+		for _, to := range nextStates {
 			newTransitions = append(newTransitions, Transition[TObservation]{
-				CurrentState: localCurrent + offsetA,
-				NextState:    localNext + offsetA,
-				Symbol:       symbol,
+				CurrentState: from + offsetA,
+				NextState:    to + offsetA,
+				Symbol: SymbolCreate[TObservation](
+					nfaA.alphabet[sym].Name,
+					globalSym,
+				),
 			})
 		}
 	}
 
-	// Add B's transitions, remapped
 	for key, nextStates := range nfaB.transitions {
-		localCurrent, localSymbolID := key[0], key[1]
-		symbol := remapTransitionSymbol(localSymbolID, remapB, nfaB.alphabet)
+		from, sym := key[0], key[1]
+		globalSym := remapB[sym]
 
-		for _, localNext := range nextStates {
+		for _, to := range nextStates {
 			newTransitions = append(newTransitions, Transition[TObservation]{
-				CurrentState: localCurrent + offsetB,
-				NextState:    localNext + offsetB,
-				Symbol:       symbol,
+				CurrentState: from + offsetB,
+				NextState:    to + offsetB,
+				Symbol: SymbolCreate[TObservation](
+					nfaB.alphabet[sym].Name,
+					globalSym,
+				),
 			})
 		}
 	}
 
-	// Add epsilon transitions from new start state (0)
-	for _, startA := range nfaA.startingStates {
+	for _, s := range nfaA.startingStates {
 		newTransitions = append(newTransitions, Transition[TObservation]{
 			CurrentState: 0,
-			NextState:    startA + offsetA,
-			Symbol:       epsilon,
-		})
-	}
-	for _, startB := range nfaB.startingStates {
-		newTransitions = append(newTransitions, Transition[TObservation]{
-			CurrentState: 0,
-			NextState:    startB + offsetB,
+			NextState:    s + offsetA,
 			Symbol:       epsilon,
 		})
 	}
 
-	// -----------------------------------------------------------------
-	// 5. Create the New NFA
-	// -----------------------------------------------------------------
+	for _, s := range nfaB.startingStates {
+		newTransitions = append(newTransitions, Transition[TObservation]{
+			CurrentState: 0,
+			NextState:    s + offsetB,
+			Symbol:       epsilon,
+		})
+	}
+
+	// ------------------------------------------------------------
+	// 5. Create merged NFA
+	// ------------------------------------------------------------
 
 	return NFACreate(
 		allocFn,
@@ -170,46 +141,4 @@ func NFAMergeOr[TObservation any, TKey comparable, TStateOutcome comparable](
 		newStates,
 		newIndexer,
 	)
-}
-
-// buildSymbolRemap creates a map[local_symbol_id] -> global_symbol_id
-func buildSymbolRemap[TObservation any, TKey comparable, TStateOutcome comparable](
-	nfa *NFA[TObservation, TStateOutcome],
-	globalKeyMap map[TKey]uint64,
-	keyFn func(TObservation) TKey,
-) map[uint64]uint64 {
-
-	remap := make(map[uint64]uint64, len(nfa.alphabet)+1)
-	for localID, obs := range nfa.alphabet {
-		key := keyFn(obs)
-		globalID, ok := globalKeyMap[key]
-		if !ok {
-			// This should be impossible if logic is correct
-			panic(fmt.Errorf("internal merge error: symbol %v not in global map", obs))
-		}
-		remap[uint64(localID)] = globalID
-	}
-	// Epsilon maps to itself
-	remap[AutarchEpsilonID] = AutarchEpsilonID
-	return remap
-}
-
-// remapTransitionSymbol creates a new Symbol object for the transition list.
-// The new Symbol contains the correct global SymbolID.
-// This helper does not need the keyFn, as it works with IDs and indices.
-func remapTransitionSymbol[TObservation any](
-	localSymbolID uint64,
-	remap map[uint64]uint64,
-	alphabet []TObservation,
-) Symbol[TObservation] {
-
-	if localSymbolID == AutarchEpsilonID {
-		return EpsilonSymbolCreate[TObservation]()
-	}
-
-	globalSymbolID := remap[localSymbolID]
-
-	// Description is only for debugging, but we can recreate it.
-	desc := fmt.Sprintf("%v", alphabet[localSymbolID])
-	return SymbolCreate[TObservation](desc, globalSymbolID)
 }

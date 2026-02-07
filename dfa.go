@@ -42,7 +42,7 @@ type DFA[TObservation any, TStateOutcome comparable] struct {
 
 	indexer SymbolIndexer[TObservation]
 
-	alphabet     []TObservation
+	alphabet     []SymbolDefinition[TObservation]
 	numStates    uint64
 	alphabetSize uint64
 }
@@ -113,7 +113,7 @@ Edge cases:
 - Empty alphabet means no valid input symbols
 - Alphabet order determines symbol ID assignment
 */
-func DFAAlphabetGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) []TObservation {
+func DFAAlphabetGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
 	return dfa.alphabet
 }
 
@@ -145,7 +145,7 @@ Edge cases:
 */
 func DFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
-	alphabet []TObservation,
+	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
 	states []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
@@ -218,12 +218,14 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 	arrayCursor := memstruct.ArrayCursorCreate[uint64](dfa.transitions) // cursor to avoid dereffing the array header each time
 
 	for _, observation := range input {
-		symbol, valid := dfa.indexer(observation)
-		if !valid {
+		symbols := dfa.indexer(observation)
+		if len(symbols) == 0 {
 			var zero TStateOutcome
-			return zero, fmt.Errorf("invalid symbol encountered: %s", symbol.SymbolDescription)
+			return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
 		}
 
+		// For DFA, use the first symbol (deterministic)
+		symbol := symbols[0]
 		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.SymbolID)
 		newState := arrayCursor.PtrAt(transitionIDX)
 		state = *newState
@@ -267,10 +269,8 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	sb.WriteString("=============================\n\n")
 
 	sb.WriteString("Alphabet:\n")
-	for id, obs := range dfa.alphabet {
-		sym, _ := dfa.indexer(obs)
-		// guaranteed deterministic because indexer returns symbolID + description
-		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, sym.SymbolDescription))
+	for id, symDef := range dfa.alphabet {
+		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, symDef.Name))
 	}
 	sb.WriteString("\n")
 
@@ -380,7 +380,13 @@ func DFATransition[TObservation any, TStateOutcome comparable](
 	currentState uint64,
 	arrayCursor memstruct.ArrayCursor[uint64],
 ) uint64 {
-	symbol, _ := dfa.indexer(observation)
+	symbols := dfa.indexer(observation)
+	if len(symbols) == 0 {
+		// Invalid symbol, return dead state (0)
+		return 0
+	}
+	// For DFA, use the first symbol (deterministic)
+	symbol := symbols[0]
 	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
 	return *newState
@@ -463,12 +469,14 @@ func DFAStep[TObservation any, TStateOutcome comparable](
 	observation TObservation,
 	arrayCursor memstruct.ArrayCursor[uint64],
 ) (uint64, error) {
-	symbol, valid := dfa.indexer(observation)
-	if !valid {
+	symbols := dfa.indexer(observation)
+	if len(symbols) == 0 {
 		var zero uint64
 		return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
 	}
 
+	// For DFA, use the first symbol (deterministic)
+	symbol := symbols[0]
 	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
 	return *newState, nil

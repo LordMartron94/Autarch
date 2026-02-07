@@ -33,18 +33,12 @@ func TestDFAMinimize(t *testing.T) {
 	// ───────────────────────────────────────────────────────────────
 	symbolA := SymbolCreate[rune]("a", 0)
 	symbolB := SymbolCreate[rune]("b", 1)
-	errSymbol := SymbolCreate[rune]("error", 2)
 
-	indexer := func(observation rune) (Symbol[rune], bool) {
-		switch observation {
-		case 'a':
-			return symbolA, true
-		case 'b':
-			return symbolB, true
-		default:
-			return errSymbol, false
-		}
+	alphabet := []SymbolDefinition[rune]{
+		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
+		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
+	indexer := SymbolIndexerBuild(alphabet)
 
 	// ───────────────────────────────────────────────────────────────
 	// 1. Create a Non-Minimal DFA (6 states)
@@ -55,7 +49,7 @@ func TestDFAMinimize(t *testing.T) {
 	// The minimal DFA should have 4 states: [0], [1,2], [3,4], [5]
 	originalDFA := DFACreate(
 		dfaAllocationFn,
-		[]rune{'a', 'b'},
+		alphabet,
 		[]Transition[rune]{
 			// Start state 0
 			{CurrentState: 0, Symbol: symbolA, NextState: 1},

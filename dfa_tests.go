@@ -26,13 +26,18 @@ func TestDFA(t *testing.T) {
 
 	symbolA := SymbolCreate[rune]("a", 0)
 	symbolB := SymbolCreate[rune]("b", 1)
-	errSymbol := SymbolCreate[rune]("error", 2)
+
+	alphabet := []SymbolDefinition[rune]{
+		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
+		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
+	}
+	indexer := SymbolIndexerBuild(alphabet)
 
 	dfa := DFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
 		},
-		[]rune{'a', 'b'},
+		alphabet,
 		[]Transition[rune]{
 			{CurrentState: 0, Symbol: symbolA, NextState: 1},
 			{CurrentState: 0, Symbol: symbolB, NextState: 0},
@@ -42,16 +47,7 @@ func TestDFA(t *testing.T) {
 			{CurrentState: 2, Symbol: symbolB, NextState: 0},
 		},
 		[]bool{false, false, true},
-		func(observation rune) (Symbol[rune], bool) {
-			switch observation {
-			case 'a':
-				return symbolA, true
-			case 'b':
-				return symbolB, true
-			default:
-				return errSymbol, false
-			}
-		},
+		indexer,
 	)
 
 	type testCase struct {
