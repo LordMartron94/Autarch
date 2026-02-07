@@ -6,12 +6,33 @@ import (
 	"memstruct"
 )
 
-// NFAMergeOr combines two NFAs into a single one using an OR operation (union).
-//
-// It requires a 'keyFn' to generate a comparable key (TKey) from a
-// non-comparable TObservation, which is used to build the merged alphabet.
-//
-// nfaA's states are given priority (lower state IDs) over nfaB's states.
+/*
+NFAMergeOr combines two NFAs into a single NFA recognizing the union of their languages.
+
+The function creates a new start state with epsilon transitions to both NFAs'
+starting states, effectively creating an automaton that accepts strings matching
+either input NFA. State IDs from nfaA are preserved with lower values than nfaB.
+
+Use cases:
+- Combining multiple pattern matchers
+- Building lexers with multiple token types
+- Creating union automata from component NFAs
+
+Time complexity: O(sa + sb + ta + tb) where s is states, t is transitions
+Space complexity: O(sa + sb + ta + tb) for merged automaton
+
+Prerequisites:
+- nfaA and nfaB must be valid NFA instances
+- allocFn must provide memory for the merged NFA
+- invalidState must be distinct from valid state outcomes
+- keyFn must produce unique keys for distinct observations
+
+Edge cases:
+- Empty alphabets are merged correctly
+- Overlapping alphabets are deduplicated via keyFn
+- Epsilon transitions are preserved from both NFAs
+- New start state (0) is non-accepting
+*/
 func NFAMergeOr[TObservation any, TKey comparable, TStateOutcome comparable](
 	nfaA *NFA[TObservation, TStateOutcome],
 	nfaB *NFA[TObservation, TStateOutcome],

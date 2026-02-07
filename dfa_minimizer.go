@@ -8,8 +8,33 @@ import (
 	"memstruct"
 )
 
-// DFAMinimize applies Hopcroft's DFA minimization using bitsets.
-// It operates in O(n log n) time complexity.
+/*
+DFAMinimize reduces a DFA to its minimal equivalent form using Hopcroft's algorithm.
+
+The algorithm partitions states into equivalence classes based on their
+behavior (transitions and outcomes), then merges equivalent states to create
+the smallest DFA recognizing the same language.
+
+Use cases:
+- Reducing DFA size for memory efficiency
+- Optimizing automata after NFA-to-DFA conversion
+- Creating canonical representations of regular languages
+
+Time complexity: O(n log n) where n is number of states
+Space complexity: O(n * a) where n is states, a is alphabet size
+
+Prerequisites:
+- dfa must be a valid DFA instance
+- minTempAllocatorMemory and maxTempAllocatorMemory must be sufficient
+- dfaAllocationFn must provide memory for the minimized DFA
+- invalidOutcome must be distinct from valid outcomes
+
+Edge cases:
+- Panics if temporary allocator exceeds maxTempAllocatorMemory
+- Already-minimal DFAs return equivalent but new instances
+- Dead states are preserved if reachable
+- Start state (0) is preserved in minimized DFA
+*/
 func DFAMinimize[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	dfaAllocationFn memarch.AllocationFn,

@@ -8,7 +8,35 @@ import (
 	"sort"
 )
 
-// NFA is a non-deterministic finite automaton.
+/*
+NFA represents a Non-Deterministic Finite Automaton.
+
+An NFA allows multiple transitions from a single state for the same input symbol,
+and supports epsilon (ε) transitions that consume no input. This flexibility
+makes NFAs easier to construct but less efficient to execute than DFAs.
+
+Use cases:
+- Building automata from regular expressions or patterns
+- Combining multiple automata via union operations
+- Converting to DFA for efficient execution
+
+Time complexity:
+- State transitions: O(1) per transition lookup
+- Epsilon closure: O(n) where n is the number of states
+- Input processing: O(n * m) where n is input length, m is states per step
+
+Space complexity: O(s * a) where s is number of states, a is alphabet size
+
+Prerequisites:
+- Alphabet must be provided with corresponding indexer function
+- States array must be pre-allocated with outcomes
+- Transitions must use valid symbol IDs from the alphabet
+
+Edge cases:
+- Empty input returns outcomes from starting states' epsilon closure
+- Invalid symbols return errors during execution
+- Dead states (no transitions) terminate processing early
+*/
 type NFA[TObservation any, TStateOutcome comparable] struct {
 	states      memcore.MarkRaw        // Array[TStateOutcome]
 	transitions map[[2]uint64][]uint64 // TODO - maybe replace this with a manually allocated data structure? This would require dynamically sized structures, which I do not want to implement yet.
@@ -20,6 +48,32 @@ type NFA[TObservation any, TStateOutcome comparable] struct {
 	numStates uint64
 }
 
+/*
+NFACreate constructs a new Non-Deterministic Finite Automaton.
+
+The function allocates memory for state outcomes and builds the transition table
+from the provided transitions. Multiple transitions from the same state with the
+same symbol are allowed, enabling non-deterministic behavior.
+
+Use cases:
+- Creating NFAs from regular expression patterns
+- Building automata programmatically
+- Constructing NFAs for later conversion to DFA
+
+Time complexity: O(t) where t is the number of transitions
+Space complexity: O(s + t) where s is number of states, t is transitions
+
+Prerequisites:
+- alphabet must contain all symbols used in transitions
+- startingStates must contain valid state indices (0 <= state < len(states))
+- transitions must use valid symbol IDs (0 <= SymbolID < len(alphabet) or AutarchEpsilonID)
+- indexer must correctly map observations to symbols in the alphabet
+
+Edge cases:
+- Panics if symbol ID exceeds alphabet size (except epsilon)
+- Empty startingStates creates an automaton that accepts nothing
+- Duplicate transitions are preserved (non-deterministic behavior)
+*/
 func NFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
 	alphabet []TObservation,
@@ -62,6 +116,27 @@ func NFACreate[TObservation any, TStateOutcome comparable](
 	}
 }
 
+/*
+NFADebugPrint outputs a human-readable representation of the NFA to stdout.
+
+The output includes the alphabet, state outcomes, starting states, and all
+transitions in a sorted, deterministic format for debugging purposes.
+
+Use cases:
+- Debugging automaton construction
+- Verifying transition correctness
+- Understanding automaton structure
+
+Time complexity: O(s + t) where s is states, t is transitions
+Space complexity: O(1) - only temporary sorting buffers
+
+Prerequisites:
+- nfa must be a valid NFA instance
+
+Edge cases:
+- Handles empty alphabets and state sets gracefully
+- Invalid symbol IDs are marked in output
+*/
 func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	nfa *NFA[TObservation, TStateOutcome],
 ) {
@@ -149,26 +224,126 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	fmt.Println("===== END NFA DEBUG PRINT =====")
 }
 
-// NFAIndexerGet returns the symbol indexer used by this NFA.
+/*
+NFAIndexerGet retrieves the symbol indexer function for the NFA.
+
+The indexer maps observations to symbols, enabling the NFA to process input
+and determine valid transitions.
+
+Use cases:
+- Accessing the indexer for custom processing
+- Building compatible automata with the same alphabet
+- Debugging symbol mapping issues
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- nfa must be a valid NFA instance
+*/
 func NFAIndexerGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
 	return nfa.indexer
 }
 
-// NFAStatesGet returns Array[TStateOutcome] of states.
+/*
+NFAStatesGet retrieves the raw memory array containing state outcomes.
+
+The returned array is indexed by state ID and contains the outcome value
+for each state (e.g., token type, accept/reject flag).
+
+Use cases:
+- Inspecting state outcomes directly
+- Building compatible automata
+- Debugging state assignments
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- nfa must be a valid NFA instance
+
+Edge cases:
+- Returns raw memory handle - use memstruct.ArrayItemGetAtUnsafe to access
+*/
 func NFAStatesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return nfa.states
 }
 
-// NFAStartingStatesGet returns the array of starting states.
+/*
+NFAStartingStatesGet retrieves the list of starting state IDs.
+
+NFAs can have multiple starting states, unlike DFAs which have a single start.
+All starting states are included in the epsilon closure at the beginning of
+input processing.
+
+Use cases:
+- Understanding automaton initialization
+- Building compatible automata
+- Debugging start state configuration
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- nfa must be a valid NFA instance
+
+Edge cases:
+- Empty slice indicates no valid starting states
+- Multiple starting states enable parallel exploration
+*/
 func NFAStartingStatesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []uint64 {
 	return nfa.startingStates
 }
 
-// NFAAlphabetGet returns the NFA's alphabet.
+/*
+NFAAlphabetGet retrieves the alphabet (set of valid input symbols) for the NFA.
+
+The alphabet defines all possible observations that can be processed by the
+automaton. Symbol IDs correspond to indices in this slice.
+
+Use cases:
+- Building compatible automata with matching alphabets
+- Understanding valid input symbols
+- Debugging symbol mapping
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- nfa must be a valid NFA instance
+
+Edge cases:
+- Empty alphabet means no valid input symbols
+- Alphabet order determines symbol ID assignment
+*/
 func NFAAlphabetGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []TObservation {
 	return nfa.alphabet
 }
 
+/*
+NFARun processes an input sequence through the NFA and returns all possible outcomes.
+
+The function simulates the NFA by maintaining a set of active states and computing
+epsilon closures at each step. Returns all outcomes from accepting states reached
+after processing the entire input.
+
+Use cases:
+- Pattern matching with regular expressions
+- Lexical analysis
+- Language recognition
+
+Time complexity: O(n * s * t) where n is input length, s is states, t is transitions per state
+Space complexity: O(s) for active state sets
+
+Prerequisites:
+- nfa must be a valid NFA instance
+- input must contain only symbols from the alphabet
+
+Edge cases:
+- Returns empty slice if no accepting states are reached
+- Returns error if invalid symbol encountered
+- Empty input returns outcomes from starting states' epsilon closure
+*/
 func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome], input []TObservation) ([]TStateOutcome, error) {
 	current := epsilonClosure(nfa, nfa.startingStates)
 
@@ -204,7 +379,30 @@ func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, T
 	return results, nil
 }
 
-// NFAEpsilonClosureCompute computes the epsilon closure for this nfa for a set of states.
+/*
+NFAEpsilonClosureCompute calculates the epsilon closure of a set of states.
+
+The epsilon closure includes all states reachable from the input states via
+zero or more epsilon transitions. This is a fundamental operation in NFA
+processing and NFA-to-DFA conversion.
+
+Use cases:
+- Computing reachable states before processing input
+- Subset construction for NFA-to-DFA conversion
+- Analyzing state reachability
+
+Time complexity: O(s * t) where s is states, t is epsilon transitions
+Space complexity: O(s) for closure set and DFS stack
+
+Prerequisites:
+- nfa must be a valid NFA instance
+- states must contain valid state indices
+
+Edge cases:
+- Empty input states returns empty closure
+- States with no epsilon transitions return themselves
+- Handles cycles in epsilon transitions correctly
+*/
 func NFAEpsilonClosureCompute[TSymbol any, TStateOutcome comparable](
 	nfa *NFA[TSymbol, TStateOutcome],
 	states []uint64,
@@ -212,9 +410,31 @@ func NFAEpsilonClosureCompute[TSymbol any, TStateOutcome comparable](
 	return epsilonClosure(nfa, states)
 }
 
-// NFATransitionsForStates takes a list of states and a symbol,
-// and returns a slice of slices, where each inner slice contains
-// the next states reachable from that specific input state.
+/*
+NFATransitionsForStates computes the set of next states reachable from the given
+states when processing the specified observation.
+
+This function is used during NFA execution and NFA-to-DFA conversion to determine
+which states can be reached from a set of current states with a given input symbol.
+
+Use cases:
+- NFA execution step computation
+- Subset construction in NFA-to-DFA conversion
+- Analyzing transition behavior
+
+Time complexity: O(s * t) where s is input states, t is transitions per state
+Space complexity: O(s) for result set
+
+Prerequisites:
+- nfa must be a valid NFA instance
+- states must contain valid state indices
+- observation must be in the alphabet
+
+Edge cases:
+- Returns empty slice if no transitions exist
+- Returns error if observation is not in alphabet
+- Deduplicates resulting states automatically
+*/
 func NFATransitionsForStates[TObservation any, TStateOutcome comparable](
 	nfa *NFA[TObservation, TStateOutcome],
 	states []uint64,

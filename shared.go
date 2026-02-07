@@ -9,15 +9,79 @@ import (
 const AutarchEpsilonID = ^uint64(0)
 const AutarchWildcardID = ^uint64(1)
 
-// SymbolIndexer must return the symbol for a given observation.
-// It should return false when the observation is not included in the language's alphabet.
+/*
+SymbolIndexer is a function type that maps observations to symbols in an automaton's alphabet.
+
+The indexer is responsible for converting input observations (e.g., runes, bytes) into
+symbol identifiers that the automaton can process. It returns false when an observation
+is not part of the automaton's alphabet.
+
+Use cases:
+- Mapping input characters to symbol IDs
+- Validating input against alphabet
+- Supporting custom symbol types
+
+Time complexity: Implementation-dependent (typically O(1) with hash map)
+Space complexity: O(1)
+
+Prerequisites:
+- Must handle all observations that may be processed
+- Must return consistent SymbolID for same observation
+- Must return false for invalid observations
+
+Edge cases:
+- Should handle epsilon and wildcard symbols if needed
+- Must be deterministic (same observation → same symbol)
+*/
 type SymbolIndexer[TObservation any] func(observation TObservation) (Symbol[TObservation], bool)
 
+/*
+Symbol represents a symbol in an automaton's alphabet with its identifier and description.
+
+The SymbolID is used for efficient transition table indexing, while SymbolDescription
+provides human-readable information for debugging and error messages.
+
+Use cases:
+- Representing alphabet symbols in transitions
+- Debugging automaton structure
+- Error reporting with symbol descriptions
+
+Time complexity: O(1) for all operations
+Space complexity: O(1) per symbol
+
+Prerequisites:
+- SymbolID must be unique within an automaton's alphabet
+- SymbolID must be less than alphabet size (or special IDs like epsilon)
+- SymbolDescription should be meaningful for debugging
+
+Edge cases:
+- Special IDs: AutarchEpsilonID for epsilon, AutarchWildcardID for wildcard
+- SymbolID 0 is valid and represents the first alphabet symbol
+*/
 type Symbol[TObservation any] struct {
 	SymbolDescription string
 	SymbolID          uint64
 }
 
+/*
+SymbolCreate constructs a new Symbol with the given description and ID.
+
+Use cases:
+- Creating symbols for transition definitions
+- Building alphabet representations
+- Constructing symbols programmatically
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- id must be a valid symbol ID for the target automaton
+- description should be meaningful for debugging
+
+Edge cases:
+- Special IDs (epsilon, wildcard) can use any description
+- ID validation is responsibility of automaton construction
+*/
 func SymbolCreate[TObservation any](description string, id uint64) Symbol[TObservation] {
 	return Symbol[TObservation]{
 		SymbolDescription: description,
@@ -25,6 +89,28 @@ func SymbolCreate[TObservation any](description string, id uint64) Symbol[TObser
 	}
 }
 
+/*
+EpsilonSymbolCreate creates a symbol representing an epsilon (ε) transition.
+
+Epsilon transitions consume no input and allow the automaton to move between
+states without processing an observation. They are used in NFAs for pattern
+construction and are eliminated during NFA-to-DFA conversion.
+
+Use cases:
+- Creating epsilon transitions in NFAs
+- Building complex automata patterns
+- Representing optional or concatenated patterns
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- None
+
+Edge cases:
+- Epsilon symbol ID is AutarchEpsilonID (max uint64)
+- Epsilon transitions are only valid in NFAs, not DFAs
+*/
 func EpsilonSymbolCreate[TObservation any]() Symbol[TObservation] {
 	return Symbol[TObservation]{
 		SymbolDescription: "epsilon",
@@ -32,8 +118,31 @@ func EpsilonSymbolCreate[TObservation any]() Symbol[TObservation] {
 	}
 }
 
-// Transition defines a single transition between one state to the next
-// for a given input symbol.
+/*
+Transition represents a single state transition in an automaton.
+
+A transition specifies moving from a current state to a next state when
+processing a specific symbol. In NFAs, multiple transitions from the same
+state with the same symbol are allowed; in DFAs, exactly one is required.
+
+Use cases:
+- Defining automaton structure
+- Building transition tables
+- Representing state machine edges
+
+Time complexity: O(1) for all operations
+Space complexity: O(1) per transition
+
+Prerequisites:
+- CurrentState and NextState must be valid state indices
+- Symbol must have valid SymbolID for the automaton
+- For DFAs, each (state, symbol) pair must appear exactly once
+
+Edge cases:
+- Epsilon transitions use AutarchEpsilonID
+- Self-transitions (CurrentState == NextState) are valid
+- Dead states have no outgoing transitions
+*/
 type Transition[TObservation any] struct {
 	Symbol       Symbol[TObservation]
 	CurrentState uint64

@@ -8,10 +8,34 @@ import (
 	"memstruct"
 )
 
-// NFAToDFA transforms an NFA into an equivalent DFA using subset construction.
-// It does NOT use memstruct.HashMap for subset → stateID mapping, to avoid the
-// segfault you are observing in HashMapItemAdd. Instead it uses a simple
-// slice of subsets and linear search. DFA state ID = index in that slice.
+/*
+NFAToDFA converts a Non-Deterministic Finite Automaton to an equivalent
+Deterministic Finite Automaton using subset construction.
+
+The algorithm builds DFA states as sets of NFA states, starting with the
+epsilon closure of the NFA's starting states. Each DFA state represents
+all possible NFA states that could be active after processing a prefix.
+
+Use cases:
+- Converting NFAs to executable DFAs
+- Optimizing automata for efficient execution
+- Preparing automata for minimization
+
+Time complexity: O(2^n * a) worst case where n is NFA states, a is alphabet size
+Space complexity: O(2^n * a) for DFA states and transitions
+
+Prerequisites:
+- nfa must be a valid NFA instance
+- minTempAllocatorMemory and maxTempAllocatorMemory must be sufficient
+- dfaAllocationFn must provide memory for the resulting DFA
+- invalidOutcome must be distinct from valid outcomes
+
+Edge cases:
+- Panics if temporary allocator exceeds maxTempAllocatorMemory
+- Empty NFA results in single-state DFA
+- Worst-case exponential blowup possible (rare in practice)
+- Uses linear search for subset matching (intentional design choice)
+*/
 func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	nfa *NFA[TSymbol, TStateOutcome],
 	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
