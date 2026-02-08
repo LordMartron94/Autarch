@@ -44,7 +44,9 @@ func TestNFA(t *testing.T) {
 			{CurrentState: 1, Symbol: symbolA, NextState: 1},
 			{CurrentState: 1, Symbol: symbolB, NextState: 1},
 		},
+		nil, // No epsilon edges
 		[]uint64{0},
+		[]bool{false, true},
 		[]bool{false, true},
 		indexer,
 	)
@@ -115,7 +117,6 @@ func TestNFAEpsilon(t *testing.T) {
 
 	symbolA := SymbolCreate[rune]("a", 0)
 	symbolB := SymbolCreate[rune]("b", 1)
-	epsilonSymbol := EpsilonSymbolCreate[rune]() // Epsilon is back
 
 	alphabet := []SymbolDefinition[rune]{
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
@@ -130,11 +131,14 @@ func TestNFAEpsilon(t *testing.T) {
 		alphabet,
 		[]Transition[rune]{
 			{CurrentState: 0, Symbol: symbolA, NextState: 0},
-			{CurrentState: 0, Symbol: epsilonSymbol, NextState: 1},
 			{CurrentState: 1, Symbol: symbolB, NextState: 1},
+		},
+		map[uint64][]uint64{
+			0: {1}, // Epsilon edge from state 0 to state 1
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 and State 1 are both accepting
+		[]bool{true, true},
 		indexer,
 	)
 

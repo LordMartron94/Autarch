@@ -12,7 +12,7 @@ import (
 DFAMinimize reduces a DFA to its minimal equivalent form using Hopcroft's algorithm.
 
 The algorithm partitions states into equivalence classes based on their
-behavior (transitions and outcomes), then merges equivalent states to create
+behavior (transitions and acceptance/outcome), then merges equivalent states to create
 the smallest DFA recognizing the same language.
 
 Use cases:
@@ -27,23 +27,26 @@ Prerequisites:
 - dfa must be a valid DFA instance
 - minTempAllocatorMemory and maxTempAllocatorMemory must be sufficient
 - dfaAllocationFn must provide memory for the minimized DFA
-- invalidOutcome must be distinct from valid outcomes
 
 Edge cases:
 - Panics if temporary allocator exceeds maxTempAllocatorMemory
 - Already-minimal DFAs return equivalent but new instances
 - Dead states are preserved if reachable
 - Start state (0) is preserved in minimized DFA
+
+Outcome semantics:
+- Acceptance is tracked explicitly via a boolean accepting set
+- Outcomes are only meaningful for accepting states
+- Lexer error handling / fallback behavior is delegated to higher-level execution layers
 */
 func DFAMinimize[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	dfaAllocationFn memarch.AllocationFn,
 	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
-	invalidOutcome TStateOutcome,
 ) *DFA[TObservation, TStateOutcome] {
 
 	// ───────────────────────────────────────────────────────────────
-	// Temporary allocator (exactly as in NFAToDFA)
+	// Temporary allocator
 	// ───────────────────────────────────────────────────────────────
 	allocator := memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(minTempAllocatorMemory),
@@ -63,8 +66,9 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	// ───────────────────────────────────────────────────────────────
 	// Load DFA data
 	// ───────────────────────────────────────────────────────────────
-	stateArray := DFAStatesGet(dfa)
-	numStates := memstruct.ArrayCapacityGet[TStateOutcome](stateArray)
+	accArray := DFAAcceptingGet(dfa) // Array[bool]
+	outArray := DFAOutcomesGet(dfa)  // Array[TStateOutcome]
+	numStates := memstruct.ArrayCapacityGet[bool](accArray)
 	if numStates == 0 {
 		panic("DFAMinimize: DFA has no states")
 	}
@@ -73,7 +77,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	alphabetSize := len(alphabet)
 	indexer := DFAIndexerGet(dfa)
 
-	// Predecessor sets (slice-of-slices-of-slices)
+	// Predecessor sets
 	predecessorSets := DFAPredecessorSets(dfa)
 
 	// ───────────────────────────────────────────────────────────────
@@ -92,32 +96,44 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	}
 
 	// ───────────────────────────────────────────────────────────────
-	// Initial partition P: group states by outcome
+	// Initial partition P:
+	// - all non-accepting states in one block
+	// - accepting states grouped by outcome value
 	// ───────────────────────────────────────────────────────────────
-	groups := make(map[TStateOutcome]*dfaStateSubset)
+	var nonAccepting dfaStateSubset
+
+	acceptGroups := make(map[TStateOutcome]*dfaStateSubset)
+
+	accCur := memstruct.ArrayCursorCreate[bool](accArray)
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](outArray)
 
 	for s := uint64(0); s < numStates; s++ {
-		out := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
-		g, ok := groups[out]
+		if !*accCur.PtrAt(s) {
+			nonAccepting.Add(s)
+			continue
+		}
+
+		out := *outCur.PtrAt(s)
+		g, ok := acceptGroups[out]
 		if !ok {
 			tmp := &dfaStateSubset{}
-			groups[out] = tmp
+			acceptGroups[out] = tmp
 			g = tmp
 		}
 		g.Add(s)
 	}
 
-	// Convert groups into slice of blocks P
-	P := make([]dfaStateSubset, 0, len(groups))
-	for _, bs := range groups {
+	P := make([]dfaStateSubset, 0, 1+len(acceptGroups))
+	if nonAccepting.Count() > 0 {
+		P = append(P, nonAccepting)
+	}
+	for _, bs := range acceptGroups {
 		P = append(P, *bs)
 	}
 
 	// ───────────────────────────────────────────────────────────────
-	// Worklist: Queue[uint64] of block IDs
-	// Membership: map[uint64]bool
+	// Worklist
 	// ───────────────────────────────────────────────────────────────
-	// Max blocks ≤ numStates initially
 	worklist, _ := memarch.MemArchQueueCreate[uint64](
 		func(sizeBytes, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, align)
@@ -127,7 +143,6 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 
 	inW := make(map[uint64]bool)
 
-	// Enqueue all initial blocks
 	for bid := uint64(0); bid < uint64(len(P)); bid++ {
 		memstruct.QueuePushUnsafe(worklist, bid)
 		inW[bid] = true
@@ -166,10 +181,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 				Yint.Intersect(Y, &X)
 				Ydiff.Difference(Y, &X)
 
-				intEmpty := (Yint.Count() == 0)
-				diffEmpty := (Ydiff.Count() == 0)
-
-				if intEmpty || diffEmpty {
+				if Yint.Count() == 0 || Ydiff.Count() == 0 {
 					continue
 				}
 
@@ -184,7 +196,6 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 					memstruct.QueuePushUnsafe(worklist, uint64(newYid))
 					inW[uint64(Yid)] = true
 					inW[uint64(newYid)] = true
-
 				} else {
 					if Yint.Count() <= Ydiff.Count() {
 						memstruct.QueuePushUnsafe(worklist, uint64(Yid))
@@ -212,7 +223,6 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 		panic("DFAMinimize: could not find original start state 0 in any block")
 	}
 
-	// Swap the start block to be P[0]
 	if startBlockIdx != 0 {
 		P[0], P[startBlockIdx] = P[startBlockIdx], P[0]
 	}
@@ -226,11 +236,26 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 		}
 	}
 
-	// Outcomes per block
-	minOut := make([]TStateOutcome, blockCount)
+	// Acceptance/outcome per block:
+	// Because we started by grouping accepting states by outcome, each final block is homogeneous.
+	minAccepting := make([]bool, blockCount)
+	minOutcomes := make([]TStateOutcome, blockCount)
+
 	for bid := range P {
-		out := determineOutcome(&P[bid], stateArray, invalidOutcome)
-		minOut[bid] = out
+		sts := P[bid].States()
+		if len(sts) == 0 {
+			panic(fmt.Errorf("DFAMinimize: empty block at %d", bid))
+		}
+
+		rep := sts[0]
+		if *accCur.PtrAt(rep) {
+			minAccepting[bid] = true
+			minOutcomes[bid] = *outCur.PtrAt(rep)
+		} else {
+			minAccepting[bid] = false
+			var zero TStateOutcome
+			minOutcomes[bid] = zero
+		}
 	}
 
 	// Build transitions
@@ -244,11 +269,10 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 
 		representative := sts[0]
 
-		for symbolID := uint64(0); symbolID < uint64(len(alphabet)); symbolID++ {
+		for symbolID := uint64(0); symbolID < uint64(alphabetSize); symbolID++ {
 			symDef := alphabet[symbolID]
 			symbol := SymbolCreate[TObservation](symDef.Name, symbolID)
 
-			// For DFA minimization, we use the transition table directly by symbol ID
 			transitionIDX := getTransitionIDX(dfa.alphabetSize, representative, symbolID)
 			nextState := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, transitionIDX)
 
@@ -260,12 +284,12 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 		}
 	}
 
-	// Construct minimal DFA
 	return DFACreate(
 		dfaAllocationFn,
 		alphabet,
 		minTransitions,
-		minOut,
+		minAccepting,
+		minOutcomes,
 		indexer,
 	)
 }

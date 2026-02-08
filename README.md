@@ -57,7 +57,7 @@ Non-Deterministic Finite Automaton supporting multiple transitions per state-sym
 - `NFARun` - Processes input and returns all possible outcomes
 - `NFAEpsilonClosureCompute` - Computes epsilon closure of state sets
 - `NFATransitionsForStates` - Gets next states for a set of current states
-- `NFAMergeOr` - Combines two NFAs via union operation
+- `NFAMergeOr` - Combines two NFAs via union operation, deduplicating symbols by name
 
 **Example:**
 
@@ -99,6 +99,7 @@ nfa := autarch.NFACreate(
     allocFn,
     alphabet,
     transitions,
+    nil, // epsilon edges (none in this example)
     []uint64{0}, // starting states
     states,
     indexer,
@@ -132,6 +133,7 @@ dfa := autarch.NFAToDFA(
     1*memcore.GigaByte,   // max temp allocator size
     allocFn,
     false,               // invalid outcome
+    nil,                 // resolution function (nil = default: OutcomeResolutionFirst)
 )
 
 // Minimize DFA
@@ -146,6 +148,30 @@ minimized := autarch.DFAMinimize(
 // Process input efficiently
 outcome, err := autarch.DFARun(minimized, []rune{'a', 'b'})
 // outcome is true if input matches
+```
+
+### Outcome Resolution
+
+When converting an NFA to a DFA, multiple NFA states may map to a single DFA state. The outcome
+resolution function determines which outcome value to assign to the DFA state.
+
+**Built-in Resolution Functions:**
+- `OutcomeResolutionFirst`: Picks the first valid outcome (lowest state ID) - default behavior
+- `OutcomeResolutionLast`: Picks the last valid outcome (highest state ID)
+
+**Custom Resolution:**
+
+You can provide a custom `OutcomeResolutionFn` to implement domain-specific outcome selection:
+
+```go
+customResolution := func(states []uint64, outcomes []TokenType, invalidToken TokenType) TokenType {
+    // Custom logic to select from outcomes
+    // states and outcomes are parallel arrays
+    // Return selected outcome
+    return outcomes[0]
+}
+
+dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, TokenInvalid, customResolution)
 ```
 
 ### Supporting Types
@@ -220,7 +246,7 @@ nfa := pattern.RegulaCompileToNFA(
 )
 
 // Convert to DFA for efficient execution
-dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, TokenInvalid)
+dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, TokenInvalid, nil) // Uses default resolution
 ```
 
 ### Pattern Builder Functions
@@ -364,7 +390,7 @@ merged := autarch.NFAMergeOr(
 )
 
 // Convert to DFA and minimize for efficient execution
-dfa := autarch.NFAToDFA(merged, minTemp, maxTemp, allocFn, TokenInvalid)
+dfa := autarch.NFAToDFA(merged, minTemp, maxTemp, allocFn, TokenInvalid, nil) // Uses default resolution
 minimized := autarch.DFAMinimize(dfa, allocFn, minTemp, maxTemp, TokenInvalid)
 
 // Use for lexing

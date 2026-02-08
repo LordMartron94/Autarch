@@ -68,7 +68,9 @@ func TestDFAMinimize(t *testing.T) {
 			{CurrentState: 5, Symbol: symbolA, NextState: 5},
 			{CurrentState: 5, Symbol: symbolB, NextState: 5},
 		},
-		// Outcomes for 6 states: 0, 1, 2, 3, 4, 5
+		// Accepting for 6 states: 0,1,2,3,4,5
+		[]bool{false, false, false, true, true, false},
+		// Outcomes for 6 states (only meaningful where accepting=true)
 		[]bool{false, false, false, true, true, false},
 		indexer,
 	)
@@ -85,7 +87,6 @@ func TestDFAMinimize(t *testing.T) {
 		dfaAllocationFn, // Allocator for the *new* minimal DFA
 		memcore.MemoryUnitBytes(minTempMem),
 		memcore.MemoryUnitBytes(maxTempMem),
-		false,
 	)
 
 	// ───────────────────────────────────────────────────────────────

@@ -38,8 +38,11 @@ Edge cases:
 - Dead states (no transitions) terminate processing early
 */
 type NFA[TObservation any, TStateOutcome comparable] struct {
-	states      memcore.MarkRaw        // Array[TStateOutcome]
-	transitions map[[2]uint64][]uint64 // TODO - maybe replace this with a manually allocated data structure? This would require dynamically sized structures, which I do not want to implement yet.
+	accepting memcore.MarkRaw
+	outcomes  memcore.MarkRaw
+
+	transitions  map[[2]uint64][]uint64
+	epsilonEdges map[uint64][]uint64
 
 	alphabet       []SymbolDefinition[TObservation]
 	startingStates []uint64
@@ -53,7 +56,8 @@ NFACreate constructs a new Non-Deterministic Finite Automaton.
 
 The function allocates memory for state outcomes and builds the transition table
 from the provided transitions. Multiple transitions from the same state with the
-same symbol are allowed, enabling non-deterministic behavior.
+same symbol are allowed, enabling non-deterministic behavior. Epsilon transitions
+are provided separately and stored in the epsilonEdges map.
 
 Use cases:
 - Creating NFAs from regular expression patterns
@@ -66,11 +70,12 @@ Space complexity: O(s + t) where s is number of states, t is transitions
 Prerequisites:
 - alphabet must contain all symbols used in transitions
 - startingStates must contain valid state indices (0 <= state < len(states))
-- transitions must use valid symbol IDs (0 <= SymbolID < len(alphabet) or AutarchEpsilonID)
+- transitions must use valid symbol IDs (0 <= SymbolID < len(alphabet))
+- epsilonEdges can be nil (will be initialized as empty map)
 - indexer must correctly map observations to symbols in the alphabet
 
 Edge cases:
-- Panics if symbol ID exceeds alphabet size (except epsilon)
+- Panics if symbol ID exceeds alphabet size
 - Empty startingStates creates an automaton that accepts nothing
 - Duplicate transitions are preserved (non-deterministic behavior)
 */
@@ -78,23 +83,34 @@ func NFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
+	epsilonEdges map[uint64][]uint64,
 	startingStates []uint64,
-	states []TStateOutcome,
+	accepting []bool,
+	outcomes []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
 ) *NFA[TObservation, TStateOutcome] {
-	alphabetSize := uint64(len(alphabet))
-	numStates := uint64(len(states))
-
-	// 1. State Outcomes
-	stateTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
-	for stateNum, stateOutcome := range states {
-		memstruct.ArraySetAtUnsafe(stateTable, uint64(stateNum), stateOutcome)
+	if len(accepting) != len(outcomes) {
+		panic("accepting and outcomes must be same length")
 	}
 
-	// 2. Transitions
+	alphabetSize := uint64(len(alphabet))
+	numStates := uint64(len(outcomes))
+
+	validateAlphabet(alphabet, "nfa")
+
+	acceptTable, _ := memarch.MemArchArrayCreate[bool](allocFn, numStates)
+	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
+
+	for i := uint64(0); i < numStates; i++ {
+		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
+		if accepting[i] {
+			memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
+		}
+	}
+
 	transitionTable := make(map[[2]uint64][]uint64)
 	for _, transition := range transitions {
-		if transition.Symbol.SymbolID >= alphabetSize && transition.Symbol.SymbolID != AutarchEpsilonID {
+		if transition.Symbol.SymbolID >= alphabetSize {
 			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.Symbol.SymbolID, alphabetSize))
 		}
 
@@ -106,9 +122,16 @@ func NFACreate[TObservation any, TStateOutcome comparable](
 		}
 	}
 
+	epsilonMap := make(map[uint64][]uint64)
+	for state, nextStates := range epsilonEdges {
+		epsilonMap[state] = append([]uint64{}, nextStates...)
+	}
+
 	return &NFA[TObservation, TStateOutcome]{
-		states:         stateTable,
+		outcomes:       outcomeTable,
+		accepting:      acceptTable,
 		transitions:    transitionTable,
+		epsilonEdges:   epsilonMap,
 		startingStates: startingStates,
 		indexer:        indexer,
 		numStates:      numStates,
@@ -144,7 +167,7 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	fmt.Println("===== NFA DEBUG PRINT =====")
 
 	// -------------------------------------------------------
-	// Alphabet section
+	// Alphabet
 	// -------------------------------------------------------
 	fmt.Println("Alphabet:")
 	for i, symDef := range nfa.alphabet {
@@ -153,12 +176,23 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	fmt.Println()
 
 	// -------------------------------------------------------
-	// States section
+	// States (accepting + outcomes)
 	// -------------------------------------------------------
-	fmt.Println("States (index → outcome):")
+	fmt.Println("States:")
+
+	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
+
 	for s := uint64(0); s < nfa.numStates; s++ {
-		out := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](nfa.states, s)
-		fmt.Printf("  State %d → %v\n", s, out)
+
+		isAccepting := *accCur.PtrAt(s)
+
+		if isAccepting {
+			out := *outCur.PtrAt(s)
+			fmt.Printf("  State %d → %v\n", s, out)
+		} else {
+			fmt.Printf("  State %d → —\n", s)
+		}
 	}
 	fmt.Println()
 
@@ -177,9 +211,9 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 	fmt.Println()
 
 	// -------------------------------------------------------
-	// Transitions
+	// Symbol Transitions
 	// -------------------------------------------------------
-	fmt.Println("Transitions:")
+	fmt.Println("Symbol Transitions:")
 
 	keys := make([][2]uint64, 0, len(nfa.transitions))
 	for k := range nfa.transitions {
@@ -198,9 +232,7 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 		symbolID := k[1]
 
 		var symbolDesc string
-		if symbolID == AutarchEpsilonID {
-			symbolDesc = "ε"
-		} else if symbolID < uint64(len(nfa.alphabet)) {
+		if symbolID < uint64(len(nfa.alphabet)) {
 			symDef := nfa.alphabet[symbolID]
 			symbolDesc = symDef.Name
 		} else {
@@ -214,6 +246,28 @@ func NFADebugPrint[TObservation any, TStateOutcome comparable](
 		sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
 
 		fmt.Printf("  (%d) --[%s]--> %v\n", from, symbolDesc, nsCopy)
+	}
+	fmt.Println()
+
+	// -------------------------------------------------------
+	// Epsilon edges
+	// -------------------------------------------------------
+	fmt.Println("Epsilon Edges:")
+
+	epsilonKeys := make([]uint64, 0, len(nfa.epsilonEdges))
+	for k := range nfa.epsilonEdges {
+		epsilonKeys = append(epsilonKeys, k)
+	}
+	sort.Slice(epsilonKeys, func(i, j int) bool { return epsilonKeys[i] < epsilonKeys[j] })
+
+	for _, from := range epsilonKeys {
+		nexts := nfa.epsilonEdges[from]
+
+		nsCopy := make([]uint64, len(nexts))
+		copy(nsCopy, nexts)
+		sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
+
+		fmt.Printf("  (%d) --[ε]--> %v\n", from, nsCopy)
 	}
 
 	fmt.Println("===== END NFA DEBUG PRINT =====")
@@ -241,7 +295,7 @@ func NFAIndexerGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObserva
 }
 
 /*
-NFAStatesGet retrieves the raw memory array containing state outcomes.
+NFAOutcomesGet retrieves the raw memory array containing state outcomes.
 
 The returned array is indexed by state ID and contains the outcome value
 for each state (e.g., token type, accept/reject flag).
@@ -260,8 +314,12 @@ Prerequisites:
 Edge cases:
 - Returns raw memory handle - use memstruct.ArrayItemGetAtUnsafe to access
 */
-func NFAStatesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
-	return nfa.states
+func NFAOutcomesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+	return nfa.outcomes
+}
+
+func NFAAcceptingGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+	return nfa.accepting
 }
 
 /*
@@ -366,12 +424,19 @@ func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, T
 		current = epsilonClosure(nfa, mapKeys(nextSet))
 	}
 
-	results := make([]TStateOutcome, len(current))
-	for i, s := range current {
-		results[i] = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](nfa.states, s)
+	results := make([]TStateOutcome, 0)
+
+	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
+
+	for _, s := range current {
+		if *accCur.PtrAt(s) {
+			results = append(results, *outCur.PtrAt(s))
+		}
 	}
 
 	return results, nil
+
 }
 
 /*
@@ -500,8 +565,7 @@ func epsilonClosure[TObservation any, TStateOutcome comparable](
 		s := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		key := [2]uint64{s, AutarchEpsilonID}
-		nextStates, exists := nfa.transitions[key]
+		nextStates, exists := nfa.epsilonEdges[s]
 		if !exists {
 			continue
 		}

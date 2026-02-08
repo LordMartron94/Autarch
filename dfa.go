@@ -37,8 +37,9 @@ Edge cases:
 - Empty input returns outcome from state 0
 */
 type DFA[TObservation any, TStateOutcome comparable] struct {
-	states      memcore.MarkRaw // Array[TStateOutcome]
-	transitions memcore.MarkRaw // Array[uint64] -- stateAmount * alphabetSize
+	accepting   memcore.MarkRaw // Array[bool]
+	outcomes    memcore.MarkRaw // Array[TStateOutcome]
+	transitions memcore.MarkRaw // Array[uint64]
 
 	indexer SymbolIndexer[TObservation]
 
@@ -48,7 +49,7 @@ type DFA[TObservation any, TStateOutcome comparable] struct {
 }
 
 /*
-DFAStatesGet retrieves the raw memory array containing state outcomes.
+DFAOutcomesGet retrieves the raw memory array containing state outcomes.
 
 The returned array is indexed by state ID and contains the outcome value
 for each state (e.g., token type, accept/reject flag).
@@ -67,8 +68,12 @@ Prerequisites:
 Edge cases:
 - Returns raw memory handle - use memstruct.ArrayItemGetAtUnsafe to access
 */
-func DFAStatesGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
-	return dfa.states
+func DFAOutcomesGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+	return dfa.outcomes
+}
+
+func DFAAcceptingGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+	return dfa.accepting
 }
 
 /*
@@ -137,35 +142,46 @@ Prerequisites:
 - transitions must have exactly one transition per state-symbol pair
 - transitions must use valid symbol IDs (0 <= SymbolID < len(alphabet))
 - indexer must correctly map observations to symbols in the alphabet
+- alphabet must not contain duplicate symbol names with different IDs
 
 Edge cases:
 - Panics if multiple transitions exist for same state-symbol pair
 - Panics if symbol ID exceeds alphabet size
+- Panics if duplicate alphabet entries with same name but different IDs are found
 - Dead states (no transitions) are represented as transitions to state 0
 */
 func DFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
-	states []TStateOutcome,
+	accepting []bool,
+	outcomes []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
 ) *DFA[TObservation, TStateOutcome] {
-
-	alphabetSize := uint64(len(alphabet))
-	numStates := uint64(len(states))
-	rowStride := alphabetSize
-
-	// 1. State Outcomes
-	stateTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
-	for stateNum, stateOutcome := range states {
-		memstruct.ArraySetAtUnsafe(stateTable, uint64(stateNum), stateOutcome)
+	if len(accepting) != len(outcomes) {
+		panic("accepting and outcomes must be same length")
 	}
 
-	// 2. Transitions
+	alphabetSize := uint64(len(alphabet))
+	numStates := uint64(len(outcomes))
+	rowStride := alphabetSize
+
+	validateAlphabet(alphabet, "dfa")
+
+	acceptTable, _ := memarch.MemArchArrayCreate[bool](allocFn, numStates)
+	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
+
+	for i := range accepting {
+		memstruct.ArraySetAtUnsafe(acceptTable, uint64(i), accepting[i])
+		if accepting[i] {
+			memstruct.ArraySetAtUnsafe(outcomeTable, uint64(i), outcomes[i])
+		}
+	}
+
 	transitionArray, _ := memarch.MemArchArrayCreate[uint64](allocFn, numStates*alphabetSize)
 
 	for _, transition := range transitions {
-		if transition.Symbol.SymbolID >= alphabetSize && transition.Symbol.SymbolID != AutarchEpsilonID {
+		if transition.Symbol.SymbolID >= alphabetSize {
 			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.Symbol.SymbolID, alphabetSize))
 		}
 
@@ -179,12 +195,40 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 	}
 
 	return &DFA[TObservation, TStateOutcome]{
-		states:       stateTable,
+		outcomes:     outcomeTable,
+		accepting:    acceptTable,
 		transitions:  transitionArray,
 		indexer:      indexer,
 		numStates:    numStates,
 		alphabetSize: alphabetSize,
 		alphabet:     alphabet,
+	}
+}
+
+func validateAlphabet[TObservation any](alphabet []SymbolDefinition[TObservation], component string) {
+	nameToID := make(map[string]uint64)
+	for i, symDef := range alphabet {
+		symID := uint64(i)
+
+		// Validate that SymbolDefinition.ID matches its index (if ID is set)
+		if symDef.ID != symID {
+			panic(fmt.Errorf(
+				"%s: alphabet entry at index %d has mismatched ID: SymbolDefinition.ID=%d does not match index %d",
+				component, i, symDef.ID, symID,
+			))
+		}
+
+		// Check for duplicate names with different IDs
+		if existingID, exists := nameToID[symDef.Name]; exists {
+			if existingID != symID {
+				panic(fmt.Errorf(
+					"%s: duplicate alphabet entry: symbol name %q appears with different IDs: ID %d and ID %d",
+					component, symDef.Name, existingID, symID,
+				))
+			}
+		} else {
+			nameToID[symDef.Name] = symID
+		}
 	}
 }
 
@@ -231,7 +275,44 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 		state = *newState
 	}
 
-	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.states, state), nil
+	out, ok := DFAStateOutcome(dfa, state)
+	if !ok {
+		var zero TStateOutcome
+		return zero, nil
+	}
+	return out, nil
+
+}
+
+/*
+DFADebugFormatter provides optional formatting functions to make DFA debug output
+more readable by converting numeric values to human-readable representations.
+
+Each formatting function is optional (nil means use default formatting). This allows
+partial formatting (e.g., only format symbol names, not IDs).
+
+Use cases:
+- Converting numeric symbol names to character representations (e.g., "105" → "'i'")
+- Formatting state outcomes for better readability
+- Customizing debug output for specific observation types
+- Improving debugging experience for complex automata
+
+Time complexity: O(1) per formatting call
+Space complexity: O(1) per formatting call
+
+Prerequisites:
+- All formatting functions should be fast (no allocations if possible)
+- Formatting functions should handle edge cases gracefully
+
+Edge cases:
+- Nil formatter functions fall back to default formatting
+- Formatting functions may return strings of varying lengths
+*/
+type DFADebugFormatter[TObservation any, TStateOutcome comparable] struct {
+	FormatSymbolName   func(symbolID uint64, name string, observation *TObservation) string
+	FormatStateOutcome func(outcome TStateOutcome) string
+	FormatSymbolID     func(symbolID uint64) string
+	FormatStateID      func(stateID uint64) string
 }
 
 /*
@@ -255,9 +336,11 @@ Prerequisites:
 Edge cases:
 - Handles empty alphabets and state sets gracefully
 - Transition table shows all state-symbol combinations
+- If formatter is nil, uses default formatting (backward compatible)
 */
 func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
+	formatter *DFADebugFormatter[TObservation, TStateOutcome],
 ) string {
 
 	var sb strings.Builder
@@ -270,21 +353,51 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 
 	sb.WriteString("Alphabet:\n")
 	for id, symDef := range dfa.alphabet {
-		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, symDef.Name))
+		var symbolName string
+		if formatter != nil && formatter.FormatSymbolName != nil && symDef.Observation != nil {
+			symbolName = formatter.FormatSymbolName(uint64(id), symDef.Name, symDef.Observation)
+		} else {
+			symbolName = symDef.Name
+		}
+		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, symbolName))
 	}
 	sb.WriteString("\n")
 
 	// ============================================================
-	// 2. State Outcomes
+	// 2. States (accepting + outcomes)
 	// ============================================================
 	sb.WriteString("States:\n")
 
-	stateCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.states)
+	acceptCur := memstruct.ArrayCursorCreate[bool](dfa.accepting)
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 
 	for s := uint64(0); s < dfa.numStates; s++ {
-		outcome := *stateCur.PtrAt(s)
-		sb.WriteString(fmt.Sprintf("  state %2d → %v\n", s, outcome))
+
+		isAccepting := *acceptCur.PtrAt(s)
+
+		var stateLabel string
+
+		if isAccepting {
+			outcome := *outCur.PtrAt(s)
+			if formatter != nil && formatter.FormatStateOutcome != nil {
+				stateLabel = formatter.FormatStateOutcome(outcome)
+			} else {
+				stateLabel = fmt.Sprintf("%v", outcome)
+			}
+		} else {
+			stateLabel = "—" // non-accepting state
+		}
+
+		var stateIDStr string
+		if formatter != nil && formatter.FormatStateID != nil {
+			stateIDStr = formatter.FormatStateID(s)
+		} else {
+			stateIDStr = fmt.Sprintf("%2d", s)
+		}
+
+		sb.WriteString(fmt.Sprintf("  state %s → %s\n", stateIDStr, stateLabel))
 	}
+
 	sb.WriteString("\n")
 
 	// ============================================================
@@ -292,14 +405,18 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	// ============================================================
 	sb.WriteString("Transitions (rows = states, columns = symbols):\n")
 
-	// Header
 	sb.WriteString("        |")
 	for id := uint64(0); id < dfa.alphabetSize; id++ {
-		sb.WriteString(fmt.Sprintf(" %3d ", id))
+		var symbolIDStr string
+		if formatter != nil && formatter.FormatSymbolID != nil {
+			symbolIDStr = formatter.FormatSymbolID(id)
+		} else {
+			symbolIDStr = fmt.Sprintf("%3d", id)
+		}
+		sb.WriteString(fmt.Sprintf(" %3s ", symbolIDStr))
 	}
 	sb.WriteString("\n")
 
-	// divider
 	sb.WriteString("--------+")
 	for id := uint64(0); id < dfa.alphabetSize; id++ {
 		sb.WriteString("-----")
@@ -308,14 +425,29 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
-	// Each state = one row, deterministic iteration
 	for s := uint64(0); s < dfa.numStates; s++ {
-		sb.WriteString(fmt.Sprintf("  %3d  |", s))
+
+		var stateIDStr string
+		if formatter != nil && formatter.FormatStateID != nil {
+			stateIDStr = formatter.FormatStateID(s)
+		} else {
+			stateIDStr = fmt.Sprintf("%3d", s)
+		}
+
+		sb.WriteString(fmt.Sprintf("  %3s  |", stateIDStr))
 
 		row := s * dfa.alphabetSize
 		for symbol := uint64(0); symbol < dfa.alphabetSize; symbol++ {
 			target := *transCur.PtrAt(row + symbol)
-			sb.WriteString(fmt.Sprintf(" %3d ", target))
+
+			var targetStr string
+			if formatter != nil && formatter.FormatStateID != nil {
+				targetStr = formatter.FormatStateID(target)
+			} else {
+				targetStr = fmt.Sprintf("%3d", target)
+			}
+
+			sb.WriteString(fmt.Sprintf(" %3s ", targetStr))
 		}
 
 		sb.WriteString("\n")
@@ -483,15 +615,18 @@ func DFAStep[TObservation any, TStateOutcome comparable](
 }
 
 /*
-DFAStateOutcome retrieves the outcome value associated with a state.
+DFAStateOutcome retrieves the semantic outcome associated with an accepting DFA state.
 
-The outcome typically represents a token type, accept/reject flag, or other
-semantic value associated with reaching that state.
+Only accepting states carry outcomes. Non-accepting states have no semantic value
+and will return ok=false.
+
+The outcome typically represents a token type, rule result, or other semantic
+information produced when the automaton reaches an accepting configuration.
 
 Use cases:
-- Determining if a state is accepting
 - Retrieving token types in lexers
-- Checking state semantics
+- Obtaining match results from automata
+- Applying semantic actions on acceptance
 
 Time complexity: O(1)
 Space complexity: O(1)
@@ -501,12 +636,23 @@ Prerequisites:
 - state must be a valid state index
 
 Edge cases:
-- Returns zero value for invalid state indices (undefined behavior)
-- Outcome values are set during DFA construction
+- Returns ok=false for non-accepting states
+- Behavior is undefined for invalid state indices
+- Outcomes are assigned explicitly during DFA construction
+
+Design notes:
+- Acceptance is tracked separately from outcomes (no sentinel values)
+- Zero values of TStateOutcome have no semantic meaning
+- This matches formal DFA theory: acceptance is a state property, not a value hack
 */
 func DFAStateOutcome[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
-) TStateOutcome {
-	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.states, state)
+) (outcome TStateOutcome, ok bool) {
+
+	if !memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state) {
+		return outcome, false
+	}
+
+	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state), true
 }

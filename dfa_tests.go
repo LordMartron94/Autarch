@@ -47,6 +47,7 @@ func TestDFA(t *testing.T) {
 			{CurrentState: 2, Symbol: symbolB, NextState: 0},
 		},
 		[]bool{false, false, true},
+		[]bool{false, false, true},
 		indexer,
 	)
 

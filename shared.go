@@ -6,8 +6,6 @@ import (
 	"memstruct"
 )
 
-const AutarchEpsilonID = ^uint64(0)
-
 /*
 SymbolKind represents the type of a symbol definition.
 
@@ -27,7 +25,6 @@ Edge cases:
 - SymbolKindRange represents range-based matches (e.g., 'a'-'z')
 - SymbolKindClass represents character class matches (e.g., digits, letters)
 - SymbolKindWildcard represents wildcard matches (any character)
-- SymbolKindEpsilon represents epsilon transitions
 */
 type SymbolKind uint8
 
@@ -36,7 +33,6 @@ const (
 	SymbolKindRange    SymbolKind = 1
 	SymbolKindClass    SymbolKind = 2
 	SymbolKindWildcard SymbolKind = 3
-	SymbolKindEpsilon  SymbolKind = 4
 )
 
 /*
@@ -90,7 +86,6 @@ Prerequisites:
 - Must return empty array for invalid observations
 
 Edge cases:
-- Should handle epsilon symbol if needed
 - Must be deterministic (same observation → same symbols)
 - Empty array indicates invalid observation
 - Multiple symbols enable non-deterministic behavior at the observation level
@@ -113,11 +108,10 @@ Space complexity: O(1) per symbol
 
 Prerequisites:
 - SymbolID must be unique within an automaton's alphabet
-- SymbolID must be less than alphabet size (or special IDs like epsilon)
+- SymbolID must be less than alphabet size
 - SymbolDescription should be meaningful for debugging
 
 Edge cases:
-- Special IDs: AutarchEpsilonID for epsilon, AutarchWildcardID for wildcard
 - SymbolID 0 is valid and represents the first alphabet symbol
 */
 type Symbol[TObservation any] struct {
@@ -152,9 +146,10 @@ Edge cases:
 - Empty match results indicate invalid observations
 */
 type SymbolDefinition[TObservation any] struct {
-	ID    uint64
-	Name  string
-	Match func(observation TObservation) bool
+	ID          uint64
+	Name        string
+	Match       func(observation TObservation) bool
+	Observation *TObservation // Optional: original observation value for formatting (e.g., for literal symbols)
 }
 
 /*
@@ -173,42 +168,12 @@ Prerequisites:
 - description should be meaningful for debugging
 
 Edge cases:
-- Special IDs (epsilon, wildcard) can use any description
 - ID validation is responsibility of automaton construction
 */
 func SymbolCreate[TObservation any](description string, id uint64) Symbol[TObservation] {
 	return Symbol[TObservation]{
 		SymbolDescription: description,
 		SymbolID:          id,
-	}
-}
-
-/*
-EpsilonSymbolCreate creates a symbol representing an epsilon (ε) transition.
-
-Epsilon transitions consume no input and allow the automaton to move between
-states without processing an observation. They are used in NFAs for pattern
-construction and are eliminated during NFA-to-DFA conversion.
-
-Use cases:
-- Creating epsilon transitions in NFAs
-- Building complex automata patterns
-- Representing optional or concatenated patterns
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- None
-
-Edge cases:
-- Epsilon symbol ID is AutarchEpsilonID (max uint64)
-- Epsilon transitions are only valid in NFAs, not DFAs
-*/
-func EpsilonSymbolCreate[TObservation any]() Symbol[TObservation] {
-	return Symbol[TObservation]{
-		SymbolDescription: "epsilon",
-		SymbolID:          AutarchEpsilonID,
 	}
 }
 
@@ -273,7 +238,6 @@ Prerequisites:
 - For DFAs, each (state, symbol) pair must appear exactly once
 
 Edge cases:
-- Epsilon transitions use AutarchEpsilonID
 - Self-transitions (CurrentState == NextState) are valid
 - Dead states have no outgoing transitions
 */
@@ -398,39 +362,147 @@ func (s *dfaStateSubset) States() []uint64 {
 	return states
 }
 
-// determineOutcome picks the "best" outcome for a subset of NFA states.
-//
-// We implement the priority rule:
-// Use the outcome of the lowest-indexed NFA state that has a
-// "non-invalid" (i.e., non-zero) outcome.
-//
-// If all states in the subset have a "zero" outcome, the DFA state
-// is non-accepting (returns the zero outcome).
-//
+/*
+OutcomeResolutionFn resolves which outcome to assign to a DFA state when multiple NFA
+accepting states are merged during NFA-to-DFA conversion.
+
+The function receives the list of NFA state IDs in the subset and their corresponding
+outcomes (only accepting states carry meaningful outcomes).
+
+Use cases:
+- Custom outcome selection logic during DFA construction
+- Priority-based rule resolution
+- Context-aware outcome selection
+
+Time complexity: Should be O(n) where n is number of states
+Space complexity: Should be O(1) - avoid allocations in hot path
+
+Prerequisites:
+- states and outcomes must be parallel arrays (same length)
+
+Edge cases:
+- Empty states list represents a non-accepting DFA state
+- All zero-value outcomes represent no accepting state
+- Function should handle any number of states efficiently
+
+Only accepting states are expected to carry semantic outcomes. Non-accepting states
+should contain the zero value of TStateOutcome.
+*/
+type OutcomeResolutionFn[TStateOutcome comparable] func(
+	states []uint64,
+	outcomes []TStateOutcome,
+) (outcome TStateOutcome, ok bool)
+
 //go:inline
 func determineOutcome[TStateOutcome comparable](
 	subset *dfaStateSubset,
 	stateArray memcore.MarkRaw,
-	invalidOutcome TStateOutcome,
-) TStateOutcome {
+) (outcome TStateOutcome, ok bool) {
+
 	states := subset.States()
 	if len(states) == 0 {
-		return invalidOutcome // An empty (dead) state is non-accepting
+		return outcome, false
 	}
 
-	bestStateID := ^uint64(0)     // Start at max uint64
-	bestOutcome := invalidOutcome // Default to the non-accepting outcome
+	bestStateID := ^uint64(0)
 
 	for _, s := range states {
-		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
+		o := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
 
-		if outcome != invalidOutcome {
+		var zero TStateOutcome
+		if o != zero {
 			if s < bestStateID {
 				bestStateID = s
-				bestOutcome = outcome
+				outcome = o
+				ok = true
 			}
 		}
 	}
 
-	return bestOutcome
+	return
+}
+
+/*
+OutcomeResolutionFirst selects the accepting outcome with the lowest state ID.
+
+This corresponds to rule-order priority where earlier rules win.
+
+Use cases:
+- Default outcome resolution during DFA construction
+- Priority-based lexers (first rule added wins)
+- Deterministic resolution
+
+Time complexity: O(n) where n is number of states
+Space complexity: O(1)
+
+Prerequisites:
+- states and outcomes must be parallel arrays
+
+Edge cases:
+- Returns ok=false if no accepting states exist
+- Returns ok=false if states list is empty
+*/
+func OutcomeResolutionFirst[TStateOutcome comparable](
+	states []uint64,
+	outcomes []TStateOutcome,
+) (outcome TStateOutcome, ok bool) {
+
+	bestStateID := ^uint64(0)
+
+	for i, s := range states {
+		o := outcomes[i]
+
+		var zero TStateOutcome
+		if o != zero {
+			if s < bestStateID {
+				bestStateID = s
+				outcome = o
+				ok = true
+			}
+		}
+	}
+
+	return
+}
+
+/*
+OutcomeResolutionLast selects the accepting outcome with the highest state ID.
+
+This corresponds to reverse rule-order priority where later rules override earlier ones.
+
+Use cases:
+- Override-based lexers
+- Alternative priority schemes
+
+Time complexity: O(n) where n is number of states
+Space complexity: O(1)
+
+Prerequisites:
+- states and outcomes must be parallel arrays
+
+Edge cases:
+- Returns ok=false if no accepting states exist
+- Returns ok=false if states list is empty
+*/
+func OutcomeResolutionLast[TStateOutcome comparable](
+	states []uint64,
+	outcomes []TStateOutcome,
+) (outcome TStateOutcome, ok bool) {
+
+	var zero TStateOutcome
+	bestStateID := uint64(0)
+
+	for i, s := range states {
+		o := outcomes[i]
+		if o == zero {
+			continue
+		}
+		if !ok || s > bestStateID {
+			bestStateID = s
+			outcome = o
+			ok = true
+		}
+	}
+
+	return
 }

@@ -13,46 +13,38 @@ import (
 // ============================================================
 
 /*
-	RegulaCompileToNFA compiles a regula pattern AST into a Non-Deterministic Finite Automaton (NFA).
+RegulaCompileToNFA compiles a regula pattern AST into a Non-Deterministic Finite Automaton (NFA).
 
-The function uses Thompson's construction algorithm to convert a regular expression pattern
-represented as an abstract syntax tree into an executable NFA. The resulting NFA can be used
-for pattern matching, lexical analysis, or further converted to a DFA for efficient execution.
+This implementation follows Thompson's construction while explicitly separating:
+
+• language acceptance (accepting states)
+• semantic payload (outcomes attached only to accepting states)
+
+Non-accepting states carry no semantic meaning.
 
 Use cases:
-- Building pattern matchers from regular expression-like syntax
-- Constructing lexers with complex token recognition rules
-- Creating state machines for protocol parsing
-- Implementing string matching engines
+- Regular expression execution
+- Lexer rule compilation
+- Pattern recognizers
+- Protocol parsers
 
-Time complexity: O(n) where n is the number of nodes in the AST
-Space complexity: O(s + t) where s is states and t is transitions in the resulting NFA
+Time complexity: O(n) where n is AST nodes
+Space complexity: O(s + t) where s = states, t = transitions
 
-Prerequisites:
-- alloc must be a valid memory allocation function
-- root must be a valid regulaAST constructed using the pattern builder functions
-- acceptOutcome and invalidOutcome must be distinct values
+Acceptance model:
+- Exactly one accepting state is produced by Thompson construction
+- Acceptance is stored explicitly (no sentinel outcomes)
 
-Edge cases:
-- Empty patterns (epsilon) are supported and create a single accepting state
-- Patterns with no matches create an NFA that never accepts
-- Large patterns may create NFAs with many states (exponential in worst case for alternations)
+Outcome model:
+- Only accepting states carry semantic payloads
+- Non-accepting states' outcome values are ignored
 
-The compilation process:
-1. Collects all symbols (literals and character classes) from the AST
-2. Builds a deduplicated alphabet with stable symbol IDs
-3. Constructs NFA transitions using Thompson's algorithm
-4. Marks the final accepting state with acceptOutcome
-5. Marks all other states with invalidOutcome
-
-The resulting NFA uses epsilon transitions for alternation, concatenation, and repetition operations.
-These can be eliminated by converting to a DFA using NFAToDFA.
+Epsilon transitions are used for composition and can be removed via DFA conversion.
 */
 func RegulaCompileToNFA[TObservation cmp.Ordered, TOutcome comparable](
 	alloc memarch.AllocationFn,
-	root regulaAST[TObservation],
+	root RegulaAST[TObservation],
 	acceptOutcome TOutcome,
-	invalidOutcome TOutcome,
 ) *autarch.NFA[TObservation, TOutcome] {
 
 	builder := newSymbolBuilder[TObservation]()
@@ -64,20 +56,165 @@ func RegulaCompileToNFA[TObservation cmp.Ordered, TOutcome comparable](
 	c := newThompsonCompiler(builder)
 	frag := c.compile(&root)
 
-	states := make([]TOutcome, c.nextState)
-	for i := range states {
-		states[i] = invalidOutcome
-	}
-	states[frag.accept] = acceptOutcome
+	numStates := c.nextState
+
+	// Semantic outcomes (only meaningful for accepting states)
+	outcomes := make([]TOutcome, numStates)
+
+	// Explicit acceptance flags
+	accepting := make([]bool, numStates)
+	accepting[frag.accept] = true
+	outcomes[frag.accept] = acceptOutcome
 
 	return autarch.NFACreate(
 		alloc,
 		alphabet,
 		c.transitions,
+		c.epsilonEdges,
 		[]uint64{frag.start},
-		states,
+		accepting,
+		outcomes,
 		indexer,
 	)
+}
+
+/*
+RegulaCompileToNFAWithBuilder compiles a regula AST into an NFA using a shared alphabet context.
+
+This is required when compiling multiple lexer rules that must share symbol IDs.
+
+Acceptance and semantic payloads are stored explicitly.
+
+Use cases:
+- Lexer construction with many rules
+- Shared-alphabet automata
+- Multi-pattern recognizers
+
+Acceptance semantics:
+- Thompson construction produces exactly one accepting state
+- Acceptance is explicit (no sentinel values)
+
+Only accepting states carry semantic outcomes.
+*/
+func RegulaCompileToNFAWithBuilder[TObservation cmp.Ordered, TOutcome comparable](
+	alloc memarch.AllocationFn,
+	root RegulaAST[TObservation],
+	ctx *RegulaSharedCompilationContext[TObservation],
+	acceptOutcome TOutcome,
+) *autarch.NFA[TObservation, TOutcome] {
+
+	c := newThompsonCompiler(ctx.builder)
+	frag := c.compile(&root)
+
+	numStates := c.nextState
+
+	outcomes := make([]TOutcome, numStates)
+	accepting := make([]bool, numStates)
+
+	accepting[frag.accept] = true
+	outcomes[frag.accept] = acceptOutcome
+
+	return autarch.NFACreate(
+		alloc,
+		ctx.alphabet,
+		c.transitions,
+		c.epsilonEdges,
+		[]uint64{frag.start},
+		accepting,
+		outcomes,
+		ctx.indexer,
+	)
+}
+
+/*
+RegulaSharedCompilationContext represents a shared compilation context for multiple patterns.
+This allows multiple patterns to be compiled with consistent symbol IDs, which is required
+for proper lexer compilation where all rules in a state must share one alphabet.
+
+Use cases:
+- Compiling multiple patterns with shared symbol IDs for lexer rulesets
+- Building lexers where all rules in a state share one alphabet
+- Ensuring symbol coherence across multiple pattern compilations
+
+The context should be created once per lexer state, then used to compile all patterns
+in that state.
+*/
+type RegulaSharedCompilationContext[TObservation cmp.Ordered] struct {
+	builder  *symbolBuilder[TObservation]
+	alphabet []autarch.SymbolDefinition[TObservation]
+	indexer  autarch.SymbolIndexer[TObservation]
+}
+
+/*
+RegulaCreateSharedCompilationContext creates a shared compilation context for multiple patterns.
+All patterns should be collected into this context before building the alphabet, then each
+pattern can be compiled using RegulaCompileToNFAWithBuilder.
+
+Use cases:
+- Setting up lexer state compilation with shared symbols
+- Preparing context for compiling multiple patterns with consistent symbol IDs
+
+Time complexity: O(1) - just creates the context
+Space complexity: O(1) - context structure only
+
+Prerequisites:
+- None (empty context)
+
+Edge cases:
+- Context must have patterns collected before building alphabet
+- Alphabet should be built once after all patterns are collected
+*/
+func RegulaCreateSharedCompilationContext[TObservation cmp.Ordered]() *RegulaSharedCompilationContext[TObservation] {
+	return &RegulaSharedCompilationContext[TObservation]{
+		builder: newSymbolBuilder[TObservation](),
+	}
+}
+
+/*
+CollectPattern collects symbols from a pattern AST into the shared context.
+This should be called for all patterns before building the alphabet.
+
+Use cases:
+- Collecting symbols from multiple patterns into shared context
+- Preparing for unified alphabet construction
+
+Time complexity: O(n) where n is nodes in the AST
+Space complexity: O(s) where s is unique symbols collected
+
+Prerequisites:
+- context must be a valid shared compilation context
+- pattern must be a valid RegulaAST
+
+Edge cases:
+- Can be called multiple times for different patterns
+- Symbols are deduplicated automatically
+*/
+func (ctx *RegulaSharedCompilationContext[TObservation]) CollectPattern(pattern *RegulaAST[TObservation]) {
+	ctx.builder.collect(pattern)
+}
+
+/*
+BuildAlphabet builds the unified alphabet and indexer from all collected patterns.
+This should be called once after all patterns have been collected.
+
+Use cases:
+- Finalizing the shared alphabet after pattern collection
+- Preparing for pattern compilation with shared symbols
+
+Time complexity: O(s) where s is number of unique symbols
+Space complexity: O(s) for alphabet storage
+
+Prerequisites:
+- At least one pattern should have been collected
+- Should be called once after all CollectPattern calls
+
+Edge cases:
+- Empty alphabet if no patterns collected
+- Alphabet is deduplicated automatically
+*/
+func (ctx *RegulaSharedCompilationContext[TObservation]) BuildAlphabet() {
+	ctx.alphabet = ctx.builder.buildAlphabet()
+	ctx.indexer = autarch.SymbolIndexerBuild(ctx.alphabet)
 }
 
 //
@@ -110,12 +247,14 @@ func (b *symbolBuilder[TObs]) literal(v TObs) uint64 {
 	b.nextID++
 
 	b.keys[key] = id
+	obs := v // Capture observation value for formatting
 	b.defs = append(b.defs, autarch.SymbolDefinition[TObs]{
 		ID:   id,
 		Name: fmt.Sprintf("%v", v),
 		Match: func(o TObs) bool {
 			return o == v
 		},
+		Observation: &obs,
 	})
 
 	return id
@@ -151,7 +290,7 @@ func (b *symbolBuilder[TObs]) class(cls charClass[TObs]) uint64 {
 	return id
 }
 
-func (b *symbolBuilder[TObs]) collect(n *regulaAST[TObs]) {
+func (b *symbolBuilder[TObs]) collect(n *RegulaAST[TObs]) {
 	if n == nil {
 		return
 	}
@@ -190,13 +329,17 @@ type nfaFragment struct {
 }
 
 type thompsonCompiler[TObs cmp.Ordered] struct {
-	nextState   uint64
-	transitions []autarch.Transition[TObs]
-	builder     *symbolBuilder[TObs]
+	nextState    uint64
+	transitions  []autarch.Transition[TObs]
+	epsilonEdges map[uint64][]uint64
+	builder      *symbolBuilder[TObs]
 }
 
 func newThompsonCompiler[TObs cmp.Ordered](b *symbolBuilder[TObs]) *thompsonCompiler[TObs] {
-	return &thompsonCompiler[TObs]{builder: b}
+	return &thompsonCompiler[TObs]{
+		builder:      b,
+		epsilonEdges: make(map[uint64][]uint64),
+	}
 }
 
 func (c *thompsonCompiler[TObs]) newState() uint64 {
@@ -210,13 +353,7 @@ func (c *thompsonCompiler[TObs]) newFrag() nfaFragment {
 }
 
 func (c *thompsonCompiler[TObs]) eps(a, b uint64) {
-	c.transitions = append(c.transitions,
-		autarch.Transition[TObs]{
-			CurrentState: a,
-			NextState:    b,
-			Symbol:       autarch.EpsilonSymbolCreate[TObs](),
-		},
-	)
+	c.epsilonEdges[a] = append(c.epsilonEdges[a], b)
 }
 
 func (c *thompsonCompiler[TObs]) symbol(a uint64, id uint64, b uint64) {
@@ -229,7 +366,7 @@ func (c *thompsonCompiler[TObs]) symbol(a uint64, id uint64, b uint64) {
 	)
 }
 
-func (c *thompsonCompiler[TObs]) compile(n *regulaAST[TObs]) nfaFragment {
+func (c *thompsonCompiler[TObs]) compile(n *RegulaAST[TObs]) nfaFragment {
 	switch n.kind {
 
 	case EXPRESSION_LITERAL:
@@ -290,7 +427,7 @@ func (c *thompsonCompiler[TObs]) class(cls charClass[TObs]) nfaFragment {
 	return f
 }
 
-func (c *thompsonCompiler[TObs]) repeat(n *regulaAST[TObs]) nfaFragment {
+func (c *thompsonCompiler[TObs]) repeat(n *RegulaAST[TObs]) nfaFragment {
 
 	if n.min == 0 && n.max == -1 {
 		a := c.compile(n.sub)

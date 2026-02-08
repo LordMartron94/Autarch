@@ -43,20 +43,21 @@ type charClass[TObservation any] struct {
 	ranges []charRange[TObservation] // sorted, merged
 }
 
-type regulaAST[TObservation cmp.Ordered] struct {
+type RegulaAST[TObservation cmp.Ordered] struct {
 	kind expressionKind
 
 	literals []TObservation
 	class    charClass[TObservation]
 
-	left, right *regulaAST[TObservation]
+	left, right *RegulaAST[TObservation]
 
 	min, max int
 
-	sub *regulaAST[TObservation]
+	sub *RegulaAST[TObservation]
 }
 
-/* Then concatenates two patterns, matching the left pattern followed by the right pattern.
+/*
+	Then concatenates two patterns, matching the left pattern followed by the right pattern.
 
 The resulting pattern matches input sequences where the first part matches r and the second
 part matches b, in that order. This is equivalent to the concatenation operator in regular
@@ -77,15 +78,16 @@ Edge cases:
 - Concatenating empty patterns (epsilon) with other patterns is supported
 - The resulting pattern maintains references to the original patterns
 */
-func (r regulaAST[TObservation]) Then(b regulaAST[TObservation]) regulaAST[TObservation] {
-	return regulaAST[TObservation]{
+func (r RegulaAST[TObservation]) Then(b RegulaAST[TObservation]) RegulaAST[TObservation] {
+	return RegulaAST[TObservation]{
 		kind:  EXPRESSION_CONCAT,
 		left:  &r,
 		right: &b,
 	}
 }
 
-/* Or creates an alternation pattern that matches either the left or right pattern.
+/*
+	Or creates an alternation pattern that matches either the left or right pattern.
 
 The resulting pattern matches input that matches either r or b. This is equivalent to the
 alternation operator in regular expressions (e.g., "a|b" matches either "a" or "b").
@@ -105,15 +107,16 @@ Edge cases:
 - If both patterns can match the same input, the NFA will accept both paths
 - The resulting pattern maintains references to the original patterns
 */
-func (r regulaAST[TObservation]) Or(b regulaAST[TObservation]) regulaAST[TObservation] {
-	return regulaAST[TObservation]{
+func (r RegulaAST[TObservation]) Or(b RegulaAST[TObservation]) RegulaAST[TObservation] {
+	return RegulaAST[TObservation]{
 		kind:  EXPRESSION_UNION,
 		left:  &r,
 		right: &b,
 	}
 }
 
-/* Star creates a Kleene star pattern that matches zero or more repetitions of the pattern.
+/*
+	Star creates a Kleene star pattern that matches zero or more repetitions of the pattern.
 
 The resulting pattern matches any number of repetitions of r, including zero. This is
 equivalent to the Kleene star operator in regular expressions (e.g., "a*" matches "", "a", "aa", "aaa", etc.).
@@ -134,11 +137,12 @@ Edge cases:
 - Matches infinite repetitions (no upper bound)
 - The resulting pattern maintains a reference to the original pattern
 */
-func (r regulaAST[TObservation]) Star() regulaAST[TObservation] {
+func (r RegulaAST[TObservation]) Star() RegulaAST[TObservation] {
 	return repeat(r, 0, -1)
 }
 
-/* Plus creates a pattern that matches one or more repetitions of the pattern.
+/*
+	Plus creates a pattern that matches one or more repetitions of the pattern.
 
 The resulting pattern matches one or more repetitions of r. This is equivalent to the
 plus operator in regular expressions (e.g., "a+" matches "a", "aa", "aaa", etc., but not "").
@@ -159,11 +163,12 @@ Edge cases:
 - Matches infinite repetitions (no upper bound)
 - The resulting pattern maintains a reference to the original pattern
 */
-func (r regulaAST[TObservation]) Plus() regulaAST[TObservation] {
+func (r RegulaAST[TObservation]) Plus() RegulaAST[TObservation] {
 	return repeat(r, 1, -1)
 }
 
-/* Optional creates a pattern that matches zero or one repetition of the pattern.
+/*
+	Optional creates a pattern that matches zero or one repetition of the pattern.
 
 The resulting pattern matches either zero or one occurrence of r. This is equivalent to
 the question mark operator in regular expressions (e.g., "a?" matches "" or "a").
@@ -184,11 +189,12 @@ Edge cases:
 - Matches exactly one repetition
 - The resulting pattern maintains a reference to the original pattern
 */
-func (r regulaAST[TObservation]) Optional() regulaAST[TObservation] {
+func (r RegulaAST[TObservation]) Optional() RegulaAST[TObservation] {
 	return repeat(r, 0, 1)
 }
 
-/* Repeat creates a pattern that matches a bounded number of repetitions of the pattern.
+/*
+	Repeat creates a pattern that matches a bounded number of repetitions of the pattern.
 
 The resulting pattern matches between min and max repetitions of r (inclusive). If max is -1,
 there is no upper bound. This is equivalent to bounded repetition in regular expressions
@@ -213,14 +219,15 @@ Edge cases:
 - If max == -1, matches infinite repetitions
 - The resulting pattern maintains a reference to the original pattern
 */
-func (r regulaAST[TObservation]) Repeat(min, max int) regulaAST[TObservation] {
+func (r RegulaAST[TObservation]) Repeat(min, max int) RegulaAST[TObservation] {
 	if max != -1 && max < min {
 		panic("invalid repeat bounds")
 	}
 	return repeat(r, min, max)
 }
 
-/* Sequence creates a concatenation pattern from multiple expressions in order.
+/*
+	Sequence creates a concatenation pattern from multiple expressions in order.
 
 The resulting pattern matches input sequences where each part matches the corresponding
 expression in order. This is equivalent to concatenating multiple patterns with Then,
@@ -243,7 +250,7 @@ Edge cases:
 - Single expression returns that expression unchanged
 - The resulting pattern maintains references to all input patterns
 */
-func Sequence[TObservation cmp.Ordered](expressions ...regulaAST[TObservation]) regulaAST[TObservation] {
+func Sequence[TObservation cmp.Ordered](expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
 	if len(expressions) == 0 {
 		panic("empty sequence")
 	}
@@ -255,7 +262,8 @@ func Sequence[TObservation cmp.Ordered](expressions ...regulaAST[TObservation]) 
 	return current
 }
 
-/* AnyOf creates an alternation pattern from multiple expressions.
+/*
+	AnyOf creates an alternation pattern from multiple expressions.
 
 The resulting pattern matches input that matches any of the provided expressions.
 This is equivalent to creating alternations with Or, but provides a more convenient
@@ -279,7 +287,7 @@ Edge cases:
 - If multiple expressions can match the same input, the NFA will accept all matching paths
 - The resulting pattern maintains references to all input patterns
 */
-func AnyOf[TObservation cmp.Ordered](expressions ...regulaAST[TObservation]) regulaAST[TObservation] {
+func AnyOf[TObservation cmp.Ordered](expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
 	if len(expressions) == 0 {
 		panic("empty alternation")
 	}
@@ -291,7 +299,8 @@ func AnyOf[TObservation cmp.Ordered](expressions ...regulaAST[TObservation]) reg
 	return current
 }
 
-/* Range creates a character range for use in character class patterns.
+/*
+	Range creates a character range for use in character class patterns.
 
 The range includes all observations from lo to hi (inclusive). Ranges are used to
 define character classes that match any observation within the specified bounds.
@@ -321,7 +330,8 @@ func Range[TObservation cmp.Ordered](lo, hi TObservation) charRange[TObservation
 	}
 }
 
-/* Class creates a character class pattern that matches any observation within the specified ranges.
+/*
+	Class creates a character class pattern that matches any observation within the specified ranges.
 
 The resulting pattern matches any single observation that falls within any of the provided
 ranges. Ranges are automatically normalized (sorted and merged) to eliminate overlaps and
@@ -346,15 +356,16 @@ Edge cases:
 - Ranges are sorted by lower bound during normalization
 - The resulting pattern maintains normalized ranges internally
 */
-func Class[TObservation cmp.Ordered](ranges ...charRange[TObservation]) regulaAST[TObservation] {
+func Class[TObservation cmp.Ordered](ranges ...charRange[TObservation]) RegulaAST[TObservation] {
 	normalized := normalizeRanges(ranges)
-	return regulaAST[TObservation]{
+	return RegulaAST[TObservation]{
 		kind:  EXPRESSION_CLASS,
 		class: charClass[TObservation]{ranges: normalized},
 	}
 }
 
-/* Literal creates a pattern that matches a specific sequence of observations.
+/*
+	Literal creates a pattern that matches a specific sequence of observations.
 
 The resulting pattern matches input that exactly matches the provided sequence of values
 in order. This is equivalent to literal strings in regular expressions (e.g., "abc" matches
@@ -378,15 +389,15 @@ Edge cases:
 - Multiple values create a pattern matching the exact sequence
 - The resulting pattern maintains a copy of the input values
 */
-func Literal[TObservation cmp.Ordered](values ...TObservation) regulaAST[TObservation] {
-	return regulaAST[TObservation]{
+func Literal[TObservation cmp.Ordered](values ...TObservation) RegulaAST[TObservation] {
+	return RegulaAST[TObservation]{
 		kind:     EXPRESSION_LITERAL,
 		literals: values,
 	}
 }
 
-func repeat[TObservation cmp.Ordered](sub regulaAST[TObservation], min, max int) regulaAST[TObservation] {
-	return regulaAST[TObservation]{
+func repeat[TObservation cmp.Ordered](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
+	return RegulaAST[TObservation]{
 		kind: EXPRESSION_REPEAT,
 		sub:  &sub,
 		min:  min,
