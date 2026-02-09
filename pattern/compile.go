@@ -276,7 +276,7 @@ func (b *symbolBuilder[TObs]) class(cls charClass[TObs]) uint64 {
 	b.keys[key] = id
 	b.defs = append(b.defs, autarch.SymbolDefinition[TObs]{
 		ID:   id,
-		Name: "class",
+		Name: fmt.Sprintf("class:%x", h),
 		Match: func(o TObs) bool {
 			for _, r := range ranges {
 				if o >= r.lo && o <= r.hi {
