@@ -396,6 +396,34 @@ func Literal[TObservation cmp.Ordered](values ...TObservation) RegulaAST[TObserv
 	}
 }
 
+func LiteralString[TObservation cmp.Ordered](s string) RegulaAST[TObservation] {
+	runes := []rune(s)
+
+	if len(runes) == 0 {
+		return RegulaAST[TObservation]{}
+	}
+
+	values := make([]TObservation, len(runes))
+	for i, r := range runes {
+		values[i] = TObservation(r)
+	}
+
+	return Literal(values...)
+}
+
+func WordLiteral(s string) RegulaAST[rune] {
+	return LiteralString[rune](s)
+}
+
+func OneOf(chars string) RegulaAST[rune] {
+	runes := []rune(chars)
+	ranges := make([]charRange[rune], len(runes))
+	for i, r := range runes {
+		ranges[i] = Range(r, r)
+	}
+	return Class(ranges...)
+}
+
 func repeat[TObservation cmp.Ordered](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
 	return RegulaAST[TObservation]{
 		kind: EXPRESSION_REPEAT,
