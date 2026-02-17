@@ -391,11 +391,20 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 		symbols := dfa.indexer(observation)
 		if len(symbols) == 0 {
 			var zero TStateOutcome
-			return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
+			return zero, fmt.Errorf("invalid symbol: %v", observation)
 		}
 
-		// For DFA, use the first symbol (deterministic)
+		if len(symbols) != 1 {
+			panic(fmt.Errorf(
+				"DFA invariant violated: observation %v matched %d symbols: %v",
+				observation,
+				len(symbols),
+				symbols,
+			))
+		}
+
 		symbol := symbols[0]
+
 		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.SymbolID)
 		newState := arrayCursor.PtrAt(transitionIDX)
 		state = *newState
@@ -441,13 +450,12 @@ Edge cases:
 
 Design notes:
 - Uses direct transition table scanning for maximal performance
-- Avoids symbol ID exposure by returning observations directly
 - Matches DFA formal definition: outgoing labeled edges from a state
 */
 func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
-) []TObservation {
+) []SymbolDefinition[TObservation] {
 	if state >= dfa.numStates {
 		panic(fmt.Errorf(
 			"invalid DFA state: %d (max=%d)",
@@ -460,7 +468,7 @@ func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
 	// Upper bound = alphabet size (never reallocs beyond that)
-	out := make([]TObservation, 0, dfa.alphabetSize)
+	out := make([]SymbolDefinition[TObservation], 0, dfa.alphabetSize)
 
 	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
 		target := *transCur.PtrAt(rowStart + symbolID)
@@ -470,11 +478,7 @@ func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
 		}
 
 		sym := dfa.alphabet[symbolID]
-
-		// Only concrete observations participate in diagnostics
-		if sym.Observation != nil {
-			out = append(out, *sym.Observation)
-		}
+		out = append(out, sym)
 	}
 
 	return out
@@ -762,10 +766,20 @@ func DFAStep[TObservation any, TStateOutcome comparable](
 	symbols := dfa.indexer(observation)
 	if len(symbols) == 0 {
 		var zero uint64
-		return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
+		return zero, fmt.Errorf("invalid symbol: %v", observation)
+	}
+
+	if len(symbols) != 1 {
+		panic(fmt.Errorf(
+			"DFA invariant violated: observation %v matched %d symbols: %v",
+			observation,
+			len(symbols),
+			symbols,
+		))
 	}
 
 	symbol := symbols[0]
+
 	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
 	return *newState, nil
