@@ -517,7 +517,7 @@ Edge cases:
 - Formatting functions may return strings of varying lengths
 */
 type DFADebugFormatter[TObservation any, TStateOutcome comparable] struct {
-	FormatSymbolName   func(symbolID uint64, name string, observation *TObservation) string
+	FormatSymbolName   func(id uint64, def SymbolDefinition[TObservation]) string
 	FormatStateOutcome func(outcome TStateOutcome) string
 	FormatSymbolID     func(symbolID uint64) string
 	FormatStateID      func(stateID uint64) string
@@ -561,8 +561,8 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	sb.WriteString("Alphabet:\n")
 	for id, symDef := range dfa.alphabet {
 		var symbolName string
-		if formatter != nil && formatter.FormatSymbolName != nil && symDef.Observation != nil {
-			symbolName = formatter.FormatSymbolName(uint64(id), symDef.Name, symDef.Observation)
+		if formatter != nil && formatter.FormatSymbolName != nil {
+			symbolName = formatter.FormatSymbolName(uint64(id), symDef)
 		} else {
 			symbolName = symDef.Name
 		}

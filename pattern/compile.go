@@ -6,11 +6,21 @@ import (
 	"fmt"
 	"hash/fnv"
 	"memarch"
+	"slices"
 )
 
 // ============================================================
 // PUBLIC ENTRY
 // ============================================================
+
+/*
+SuccessorFn defines how to get the next discrete value in the observation space.
+Example for rune: func(r rune) rune { return r + 1 }
+Example for float: return nil (or a fn that indicates no discrete successor)
+
+If this returns a value equal to 'next', the interval (curr, next) is considered empty.
+*/
+type SuccessorFn[T any] func(curr T) (next T, exists bool)
 
 /*
 RegulaCompileToNFA compiles a regula pattern AST into a Non-Deterministic Finite Automaton (NFA).
@@ -45,12 +55,14 @@ func RegulaCompileToNFA[TObservation cmp.Ordered, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	root RegulaAST[TObservation],
 	acceptOutcome TOutcome,
+	isLess func(a, b TObservation) bool,
+	successor SuccessorFn[TObservation],
 ) *autarch.NFA[TObservation, TOutcome] {
 
 	builder := newSymbolBuilder[TObservation]()
 	builder.collect(&root)
 
-	alphabet := builder.buildAlphabet()
+	alphabet := builder.buildAlphabet(isLess, successor)
 	indexer := autarch.SymbolIndexerBuild(alphabet)
 
 	c := newThompsonCompiler(builder)
@@ -212,8 +224,11 @@ Edge cases:
 - Empty alphabet if no patterns collected
 - Alphabet is deduplicated automatically
 */
-func (ctx *RegulaSharedCompilationContext[TObservation]) BuildAlphabet() {
-	ctx.alphabet = ctx.builder.buildAlphabet()
+func (ctx *RegulaSharedCompilationContext[TObservation]) BuildAlphabet(
+	isLess func(a, b TObservation) bool,
+	successor SuccessorFn[TObservation],
+) {
+	ctx.alphabet = ctx.builder.buildAlphabet(isLess, successor)
 	ctx.indexer = autarch.SymbolIndexerBuild(ctx.alphabet)
 }
 
@@ -223,70 +238,56 @@ func (ctx *RegulaSharedCompilationContext[TObservation]) BuildAlphabet() {
 // ============================================================
 //
 
+type request[T any] struct {
+	id     uint64
+	ranges []charRange[T]
+}
+
 type symbolBuilder[TObs cmp.Ordered] struct {
-	nextID uint64
-	keys   map[autarch.SymbolKey]uint64
-	defs   []autarch.SymbolDefinition[TObs]
+	nextLogicalID uint64
+	keys          map[autarch.SymbolKey]uint64
+	requests      []request[TObs]
+	physicalMap   map[uint64][]uint64
 }
 
 func newSymbolBuilder[TObs cmp.Ordered]() *symbolBuilder[TObs] {
 	return &symbolBuilder[TObs]{
-		keys: make(map[autarch.SymbolKey]uint64),
+		keys:        make(map[autarch.SymbolKey]uint64),
+		physicalMap: make(map[uint64][]uint64),
 	}
 }
 
 func (b *symbolBuilder[TObs]) literal(v TObs) uint64 {
 	h := hashValue(v)
 	key := autarch.SymbolKey{Kind: autarch.SymbolKindLiteral, Hash: h}
-
 	if id, ok := b.keys[key]; ok {
 		return id
 	}
 
-	id := b.nextID
-	b.nextID++
-
+	id := b.nextLogicalID
+	b.nextLogicalID++
 	b.keys[key] = id
-	obs := v // Capture observation value for formatting
-	b.defs = append(b.defs, autarch.SymbolDefinition[TObs]{
-		ID:   id,
-		Name: fmt.Sprintf("%v", v),
-		Match: func(o TObs) bool {
-			return o == v
-		},
-		Observation: &obs,
+	b.requests = append(b.requests, request[TObs]{
+		id:     id,
+		ranges: []charRange[TObs]{{lo: v, hi: v}},
 	})
-
 	return id
 }
 
 func (b *symbolBuilder[TObs]) class(cls charClass[TObs]) uint64 {
 	h := hashRanges(cls.ranges)
 	key := autarch.SymbolKey{Kind: autarch.SymbolKindClass, Hash: h}
-
 	if id, ok := b.keys[key]; ok {
 		return id
 	}
 
-	id := b.nextID
-	b.nextID++
-
-	ranges := cls.ranges
-
+	id := b.nextLogicalID
+	b.nextLogicalID++
 	b.keys[key] = id
-	b.defs = append(b.defs, autarch.SymbolDefinition[TObs]{
-		ID:   id,
-		Name: fmt.Sprintf("class:%x", h),
-		Match: func(o TObs) bool {
-			for _, r := range ranges {
-				if o >= r.lo && o <= r.hi {
-					return true
-				}
-			}
-			return false
-		},
+	b.requests = append(b.requests, request[TObs]{
+		id:     id,
+		ranges: cls.ranges,
 	})
-
 	return id
 }
 
@@ -313,8 +314,100 @@ func (b *symbolBuilder[TObs]) collect(n *RegulaAST[TObs]) {
 	}
 }
 
-func (b *symbolBuilder[TObs]) buildAlphabet() []autarch.SymbolDefinition[TObs] {
-	return b.defs
+func (b *symbolBuilder[TObs]) buildAlphabet(
+	isLess func(a, b TObs) bool,
+	successor SuccessorFn[TObs],
+) []autarch.SymbolDefinition[TObs] {
+	if len(b.requests) == 0 {
+		return nil
+	}
+
+	// 1. Collect and sort all boundary points
+	var points []TObs
+	for _, req := range b.requests {
+		for _, r := range req.ranges {
+			points = append(points, r.lo, r.hi)
+		}
+	}
+
+	// Custom sort since we aren't assuming cmp.Ordered
+	slices.SortFunc(points, func(a, b TObs) int {
+		if isLess(a, b) {
+			return -1
+		}
+		if isLess(b, a) {
+			return 1
+		}
+		return 0
+	})
+	points = slices.CompactFunc(points, func(a, b TObs) bool {
+		return !isLess(a, b) && !isLess(b, a)
+	})
+
+	var definitions []autarch.SymbolDefinition[TObs]
+
+	for i, p := range points {
+		// --- 1. The Point [p, p] ---
+		val := p
+		physID := uint64(len(definitions))
+
+		// Map logical requests to this physical point
+		for _, req := range b.requests {
+			for _, r := range req.ranges {
+				// val >= r.lo && val <= r.hi
+				if !isLess(val, r.lo) && !isLess(r.hi, val) {
+					b.physicalMap[req.id] = append(b.physicalMap[req.id], physID)
+					break
+				}
+			}
+		}
+
+		definitions = append(definitions, autarch.SymbolDefinition[TObs]{
+			ID:          physID,
+			Name:        fmt.Sprintf("pt:%v", val),
+			Match:       func(o TObs) bool { return !isLess(o, val) && !isLess(val, o) },
+			Observation: &val,
+		})
+
+		// --- 2. The Open Interval (p, nextP) ---
+		if i < len(points)-1 {
+			nextP := points[i+1]
+
+			// PRUNING LOGIC: Check if the gap is physically empty
+			if successor != nil {
+				s, exists := successor(p)
+				// If the successor of p is nextP, there are no values in between.
+				if exists && !isLess(s, nextP) && !isLess(nextP, s) {
+					continue
+				}
+			}
+
+			var covering []uint64
+			for _, req := range b.requests {
+				for _, r := range req.ranges {
+					// lo <= p AND hi >= nextP
+					if !isLess(p, r.lo) && !isLess(r.hi, nextP) {
+						covering = append(covering, req.id)
+						break
+					}
+				}
+			}
+
+			if len(covering) > 0 {
+				gapID := uint64(len(definitions))
+				for _, logID := range covering {
+					b.physicalMap[logID] = append(b.physicalMap[logID], gapID)
+				}
+				lo, hi := p, nextP
+				definitions = append(definitions, autarch.SymbolDefinition[TObs]{
+					ID:    gapID,
+					Name:  fmt.Sprintf("gap:(%v,%v)", lo, hi),
+					Match: func(o TObs) bool { return isLess(lo, o) && isLess(o, hi) },
+				})
+			}
+		}
+	}
+	return definitions
 }
 
 //
@@ -356,14 +449,21 @@ func (c *thompsonCompiler[TObs]) eps(a, b uint64) {
 	c.epsilonEdges[a] = append(c.epsilonEdges[a], b)
 }
 
-func (c *thompsonCompiler[TObs]) symbol(a uint64, id uint64, b uint64) {
-	c.transitions = append(c.transitions,
-		autarch.Transition[TObs]{
-			CurrentState: a,
-			NextState:    b,
-			Symbol:       autarch.SymbolCreate[TObs]("", id),
-		},
-	)
+func (c *thompsonCompiler[TObs]) symbol(a uint64, logicalID uint64, b uint64) {
+	physIDs, ok := c.builder.physicalMap[logicalID]
+	if !ok {
+		return
+	}
+
+	for _, pid := range physIDs {
+		c.transitions = append(c.transitions,
+			autarch.Transition[TObs]{
+				CurrentState: a,
+				NextState:    b,
+				Symbol:       autarch.SymbolCreate[TObs]("", pid),
+			},
+		)
+	}
 }
 
 func (c *thompsonCompiler[TObs]) compile(n *RegulaAST[TObs]) nfaFragment {
