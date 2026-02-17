@@ -46,6 +46,8 @@ type DFA[TObservation any, TStateOutcome comparable] struct {
 	alphabet     []SymbolDefinition[TObservation]
 	numStates    uint64
 	alphabetSize uint64
+
+	deadStates []bool
 }
 
 /*
@@ -123,32 +125,68 @@ func DFAAlphabetGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObserv
 }
 
 /*
-DFACreate constructs a new Deterministic Finite Automaton.
+DFACreate constructs a Deterministic Finite Automaton from an explicit
+and fully-specified transition set.
 
-The function allocates memory for state outcomes and builds a transition table
-as a flat array indexed by (state * alphabetSize + symbolID). Each state-symbol
-pair must have exactly one transition.
+This constructor is intentionally *semantic-neutral*:
 
+  - It does NOT invent dead states
+  - It does NOT fill missing transitions
+  - It does NOT repair incomplete automata
+
+Instead, it enforces the formal DFA invariant:
+
+	δ : Q × Σ → Q  is a total function
+
+Meaning:
+
+	Every (state, symbol) pair must appear exactly once in the transition list.
+
+All DFA semantics — including explicit dead/sink states — must already be
+present in the provided transition set (typically produced by NFAToDFA or
+post-processing passes).
+
+───────────────────────────────────────────────────────────────
+Formal invariants enforced:
+
+	✔ exactly one transition per (state, symbol)
+	✔ no missing transitions
+	✔ no duplicate transitions
+	✔ all state indices valid
+	✔ all symbol IDs valid
+	✔ alphabet consistency
+
+───────────────────────────────────────────────────────────────
 Use cases:
-- Creating DFAs from NFAs via subset construction
-- Building minimized DFAs after minimization
-- Constructing DFAs programmatically
+  - Constructing DFAs from subset construction
+  - Creating minimized DFAs
+  - Programmatic DFA generation
+  - Verified automata for lexers/parsers
 
-Time complexity: O(t) where t is the number of transitions
-Space complexity: O(s * a) where s is states, a is alphabet size
+Time complexity:  O(s * a)
+Space complexity: O(s * a)
 
-Prerequisites:
-- alphabet must contain all symbols used in transitions
-- transitions must have exactly one transition per state-symbol pair
-- transitions must use valid symbol IDs (0 <= SymbolID < len(alphabet))
-- indexer must correctly map observations to symbols in the alphabet
-- alphabet must not contain duplicate symbol names with different IDs
+Where:
 
-Edge cases:
-- Panics if multiple transitions exist for same state-symbol pair
-- Panics if symbol ID exceeds alphabet size
-- Panics if duplicate alphabet entries with same name but different IDs are found
-- Dead states (no transitions) are represented as transitions to state 0
+	s = number of states
+	a = alphabet size
+
+───────────────────────────────────────────────────────────────
+Panics on:
+
+  - missing transitions
+  - duplicate transitions
+  - out-of-range states
+  - out-of-range symbols
+  - inconsistent alphabet definitions
+
+───────────────────────────────────────────────────────────────
+Design principle:
+
+	Construction builds memory layout.
+	Validation enforces automaton correctness.
+
+Semantic mutation belongs in automaton-building passes — not here.
 */
 func DFACreate[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
@@ -159,41 +197,128 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 	indexer SymbolIndexer[TObservation],
 ) *DFA[TObservation, TStateOutcome] {
 	if len(accepting) != len(outcomes) {
-		panic("accepting and outcomes must be same length")
+		panic("DFACreate: accepting and outcomes slices must be same length")
 	}
-
-	alphabetSize := uint64(len(alphabet))
-	numStates := uint64(len(outcomes))
-	rowStride := alphabetSize
 
 	validateAlphabet(alphabet, "dfa")
 
+	alphabetSize := uint64(len(alphabet))
+	numStates := uint64(len(outcomes))
+
+	if numStates == 0 {
+		panic("DFACreate: DFA must contain at least one state")
+	}
+
+	expectedTransitions := numStates * alphabetSize
+
+	if uint64(len(transitions)) != expectedTransitions {
+		panic(fmt.Errorf(
+			"DFACreate: DFA must define exactly %d transitions (got %d)",
+			expectedTransitions,
+			len(transitions),
+		))
+	}
+
+	// ───────────────────────────────────────────────────────────────
+	// Allocate state metadata
+	// ───────────────────────────────────────────────────────────────
 	acceptTable, _ := memarch.MemArchArrayCreate[bool](allocFn, numStates)
 	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
 
-	for i := range accepting {
-		memstruct.ArraySetAtUnsafe(acceptTable, uint64(i), accepting[i])
+	for i := uint64(0); i < numStates; i++ {
+		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
 		if accepting[i] {
-			memstruct.ArraySetAtUnsafe(outcomeTable, uint64(i), outcomes[i])
+			memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
 		}
 	}
 
-	transitionArray, _ := memarch.MemArchArrayCreate[uint64](allocFn, numStates*alphabetSize)
+	// ───────────────────────────────────────────────────────────────
+	// Allocate transition table
+	// Layout: [state * alphabetSize + symbolID] → nextState
+	// ───────────────────────────────────────────────────────────────
+	transitionArray, _ := memarch.MemArchArrayCreate[uint64](
+		allocFn,
+		numStates*alphabetSize,
+	)
 
-	for _, transition := range transitions {
-		if transition.Symbol.SymbolID >= alphabetSize {
-			panic(fmt.Errorf("symbol ID must be less than the alphabetSize, got=%d,max=%d", transition.Symbol.SymbolID, alphabetSize))
+	seen := make([]bool, numStates*alphabetSize)
+
+	// ───────────────────────────────────────────────────────────────
+	// Populate transitions with strict validation
+	// ───────────────────────────────────────────────────────────────
+	for _, t := range transitions {
+
+		if t.Symbol.SymbolID >= alphabetSize {
+			panic(fmt.Errorf(
+				"DFACreate: symbol ID out of range: %d (max %d)",
+				t.Symbol.SymbolID,
+				alphabetSize-1,
+			))
 		}
 
-		idx := getTransitionIDX(rowStride, transition.CurrentState, transition.Symbol.SymbolID)
-
-		if memstruct.ArrayItemGetAtUnsafe[uint64](transitionArray, idx) != 0 {
-			panic(fmt.Errorf("cannot have multiple transitions for input symbol %v and state %d", transition.Symbol.SymbolDescription, transition.CurrentState))
+		if t.CurrentState >= numStates || t.NextState >= numStates {
+			panic(fmt.Errorf(
+				"DFACreate: transition refers to invalid state: %d → %d (max %d)",
+				t.CurrentState,
+				t.NextState,
+				numStates-1,
+			))
 		}
 
-		memstruct.ArraySetAtUnsafe(transitionArray, idx, transition.NextState)
+		idx := getTransitionIDX(alphabetSize, t.CurrentState, t.Symbol.SymbolID)
+
+		if seen[idx] {
+			panic(fmt.Errorf(
+				"DFACreate: duplicate transition for state %d on symbol %d",
+				t.CurrentState,
+				t.Symbol.SymbolID,
+			))
+		}
+
+		seen[idx] = true
+		memstruct.ArraySetAtUnsafe(transitionArray, idx, t.NextState)
 	}
 
+	// ───────────────────────────────────────────────────────────────
+	// Enforce total DFA invariant (no missing transitions)
+	// ───────────────────────────────────────────────────────────────
+	for i, ok := range seen {
+		if !ok {
+			state := uint64(i) / alphabetSize
+			symbol := uint64(i) % alphabetSize
+			panic(fmt.Errorf(
+				"DFACreate: missing transition for state %d on symbol %d",
+				state,
+				symbol,
+			))
+		}
+	}
+
+	deadStates := make([]bool, numStates)
+
+	transCur := memstruct.ArrayCursorCreate[uint64](transitionArray)
+
+	for s := uint64(0); s < numStates; s++ {
+
+		if memstruct.ArrayItemGetAtUnsafe[bool](acceptTable, s) {
+			continue
+		}
+
+		row := s * alphabetSize
+		isDead := true
+
+		for a := uint64(0); a < alphabetSize; a++ {
+			if *transCur.PtrAt(row + a) != s {
+				isDead = false
+				break
+			}
+		}
+		deadStates[s] = isDead
+	}
+
+	// ───────────────────────────────────────────────────────────────
+	// Construct DFA object
+	// ───────────────────────────────────────────────────────────────
 	return &DFA[TObservation, TStateOutcome]{
 		outcomes:     outcomeTable,
 		accepting:    acceptTable,
@@ -202,6 +327,7 @@ func DFACreate[TObservation any, TStateOutcome comparable](
 		numStates:    numStates,
 		alphabetSize: alphabetSize,
 		alphabet:     alphabet,
+		deadStates:   deadStates,
 	}
 }
 
@@ -253,7 +379,7 @@ Prerequisites:
 - input must contain only symbols from the alphabet
 
 Edge cases:
-- Returns zero value if DFA reaches dead state
+- Returns zero value if DFA ends in a non-accepting (including dead) state.
 - Returns error if invalid symbol encountered
 - Empty input returns outcome from state 0
 */
@@ -282,6 +408,84 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 	}
 	return out, nil
 
+}
+
+/*
+DFAPossibleTransitions returns all observation symbols that can legally transition
+from the given DFA state.
+
+This exposes the DFA frontier at a specific state — i.e. the set of input symbols
+for which a transition exists (non-dead transition). It is primarily used for
+diagnostics, error reporting, recovery, and interactive tooling.
+
+The function scans the transition row for the given state and collects all symbols
+whose transition target is non-zero.
+
+Use cases:
+- Producing precise lexer error messages ("expected one of ...")
+- Implementing error recovery strategies
+- Interactive parsing and tooling (IDEs, debuggers)
+- Visualizing DFA frontiers
+
+Time complexity: O(a) where a is alphabet size
+Space complexity: O(k) where k is number of valid outgoing transitions (k ≤ a)
+
+Prerequisites:
+- dfa must be a valid DFA instance
+- state must be a valid state index
+
+Edge cases:
+- Returns empty slice if state is a dead-end (no valid transitions)
+- Includes all symbols that lead to any state (accepting or not)
+- Does not allocate excessively (capacity bounded by alphabet size)
+
+Design notes:
+- Uses direct transition table scanning for maximal performance
+- Avoids symbol ID exposure by returning observations directly
+- Matches DFA formal definition: outgoing labeled edges from a state
+*/
+func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) []TObservation {
+	if state >= dfa.numStates {
+		panic(fmt.Errorf(
+			"invalid DFA state: %d (max=%d)",
+			state,
+			dfa.numStates,
+		))
+	}
+
+	rowStart := state * dfa.alphabetSize
+	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
+
+	// Upper bound = alphabet size (never reallocs beyond that)
+	out := make([]TObservation, 0, dfa.alphabetSize)
+
+	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
+		target := *transCur.PtrAt(rowStart + symbolID)
+
+		if DFAIsDeadState(dfa, target) {
+			continue
+		}
+
+		sym := dfa.alphabet[symbolID]
+
+		// Only concrete observations participate in diagnostics
+		if sym.Observation != nil {
+			out = append(out, *sym.Observation)
+		}
+	}
+
+	return out
+}
+
+/* DFAIsDeadState checks whether the state is dead. */
+func DFAIsDeadState[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) bool {
+	return dfa.deadStates[state]
 }
 
 /*
@@ -342,7 +546,6 @@ func DFADebugPrint[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	formatter *DFADebugFormatter[TObservation, TStateOutcome],
 ) string {
-
 	var sb strings.Builder
 
 	// ============================================================
@@ -482,49 +685,6 @@ func DFACursorGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservat
 }
 
 /*
-DFATransition computes the next state from a current state and observation.
-
-This function performs a single transition step using a pre-allocated cursor
-for optimal performance. It is designed for use in tight loops where multiple
-transitions are processed sequentially.
-
-Use cases:
-- Manual DFA execution with cursor optimization
-- Lexical analysis with maximal munch strategy
-- Custom state machine processing
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- dfa must be a valid DFA instance
-- currentState must be a valid state index
-- observation must be in the alphabet
-- arrayCursor must be from DFACursorGet
-
-Edge cases:
-- Returns transition target even if it's a dead state
-- Assumes valid observation (no error checking for performance)
-*/
-func DFATransition[TObservation any, TStateOutcome comparable](
-	dfa *DFA[TObservation, TStateOutcome],
-	observation TObservation,
-	currentState uint64,
-	arrayCursor memstruct.ArrayCursor[uint64],
-) uint64 {
-	symbols := dfa.indexer(observation)
-	if len(symbols) == 0 {
-		// Invalid symbol, return dead state (0)
-		return 0
-	}
-	// For DFA, use the first symbol (deterministic)
-	symbol := symbols[0]
-	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
-	newState := arrayCursor.PtrAt(transitionIDX)
-	return *newState
-}
-
-/*
 DFAPredecessorSets computes all predecessor states for each state-symbol combination.
 
 The result is a three-dimensional structure: [symbolID][targetState][]predecessorStates.
@@ -549,7 +709,6 @@ Edge cases:
 func DFAPredecessorSets[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 ) [][][]uint64 {
-
 	incoming := make([][][]uint64, dfa.alphabetSize)
 	for c := range incoming {
 		incoming[c] = make([][]uint64, dfa.numStates)
@@ -593,7 +752,6 @@ Prerequisites:
 Edge cases:
 - Returns error if observation is not in alphabet
 - Returns next state even if it's a dead state
-- Handles transitions to state 0 (dead state indicator)
 */
 func DFAStep[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
@@ -607,7 +765,6 @@ func DFAStep[TObservation any, TStateOutcome comparable](
 		return zero, fmt.Errorf("invalid symbol encountered: %v", observation)
 	}
 
-	// For DFA, use the first symbol (deterministic)
 	symbol := symbols[0]
 	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
@@ -649,7 +806,6 @@ func DFAStateOutcome[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) (outcome TStateOutcome, ok bool) {
-
 	if !memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state) {
 		return outcome, false
 	}

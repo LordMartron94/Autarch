@@ -63,10 +63,7 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	allocator := memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(minTempAllocatorMemory),
 		func(currentCap, neededCap uint64) uint64 {
-			newSize := currentCap * 2
-			if newSize < neededCap {
-				newSize = neededCap
-			}
+			newSize := max(currentCap*2, neededCap)
 			if newSize > uint64(maxTempAllocatorMemory) {
 				panic(fmt.Errorf("subset construction needs too much memory: need=%v max=%v", newSize, maxTempAllocatorMemory))
 			}
