@@ -2,6 +2,7 @@ package autarch
 
 import (
 	"fmt"
+	"foundation"
 	"memarch"
 	"memcore"
 	"memstruct"
@@ -420,7 +421,7 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 }
 
 /*
-DFAPossibleTransitions returns all observation symbols that can legally transition
+DFAAvailableSymbols returns all observation symbols that can legally transition
 from the given DFA state.
 
 This exposes the DFA frontier at a specific state — i.e. the set of input symbols
@@ -452,7 +453,7 @@ Design notes:
 - Uses direct transition table scanning for maximal performance
 - Matches DFA formal definition: outgoing labeled edges from a state
 */
-func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
+func DFAAvailableSymbols[TObservation any, TStateOutcome comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) []SymbolDefinition[TObservation] {
@@ -479,6 +480,77 @@ func DFAPossibleTransitions[TObservation any, TStateOutcome comparable](
 
 		sym := dfa.alphabet[symbolID]
 		out = append(out, sym)
+	}
+
+	return out
+}
+
+/*
+DFATransitionsFrom returns all outgoing DFA transitions from the given state.
+
+Each transition is represented as a (symbol, targetState) pair corresponding to:
+
+	δ(state, symbol) → targetState
+
+This exposes the full outgoing edge set of the DFA graph at a specific state.
+
+Use cases:
+- DFA visualization
+- Minimization algorithms
+- Graph traversal and reachability analysis
+- Debugging automata structure
+- Building higher-level transition views
+
+Time complexity: O(a) where a is alphabet size
+Space complexity: O(a)
+
+Prerequisites:
+- dfa must be a valid DFA instance
+- state must be a valid state index
+
+Edge cases:
+- Includes transitions to dead states (true DFA semantics)
+- Always returns exactly alphabetSize transitions (DFA is total)
+- Order matches alphabet symbol IDs
+
+Design notes:
+- Directly scans transition table row (no maps, no allocations beyond slice)
+- Preserves DFA formal invariant: one transition per symbol
+*/
+func DFATransitionsFrom[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) []struct {
+	Symbol SymbolDefinition[TObservation]
+	Target uint64
+} {
+
+	if state >= dfa.numStates {
+		panic(fmt.Errorf(
+			"DFATransitionsFrom: invalid state %d (max=%d)",
+			state,
+			dfa.numStates-1,
+		))
+	}
+
+	rowStart := state * dfa.alphabetSize
+	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
+
+	out := make([]struct {
+		Symbol SymbolDefinition[TObservation]
+		Target uint64
+	}, 0, dfa.alphabetSize)
+
+	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
+		target := *transCur.PtrAt(rowStart + symbolID)
+
+		out = append(out, struct {
+			Symbol SymbolDefinition[TObservation]
+			Target uint64
+		}{
+			Symbol: dfa.alphabet[symbolID],
+			Target: target,
+		})
 	}
 
 	return out
@@ -825,4 +897,69 @@ func DFAStateOutcome[TObservation any, TStateOutcome comparable](
 	}
 
 	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state), true
+}
+
+/*
+DFAStates returns all DFA state IDs as a contiguous slice.
+
+The states are always numbered densely from 0 to numStates-1.
+
+Use cases:
+- Iterating over all states (minimization, analysis, visualization)
+- Building partitions or worklists
+- Debugging and inspection
+
+Time complexity: O(s)
+Space complexity: O(s)
+
+Where:
+
+	s = number of states in the DFA
+*/
+func DFAStates[TObservation any, TStateOutcome comparable, TAs foundation.Integer](
+	dfa *DFA[TObservation, TStateOutcome],
+) []TAs {
+	states := make([]TAs, dfa.numStates)
+
+	for i := uint64(0); i < dfa.numStates; i++ {
+		states[i] = TAs(i)
+	}
+
+	return states
+}
+
+/*
+DFAIsAccepting checks whether the given DFA state is accepting.
+
+This performs a direct O(1) lookup in the acceptance table.
+
+Use cases:
+- Fast acceptance checks during execution
+- DFA analysis and visualization
+- Minimization algorithms
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Prerequisites:
+- dfa must be valid
+- state must be < dfa.numStates
+
+Panics:
+- If state is out of range
+*/
+func DFAIsAccepting[TObservation any, TStateOutcome comparable](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) bool {
+
+	if state >= dfa.numStates {
+		panic(fmt.Errorf(
+			"DFAIsAccepting: invalid state %d (max=%d)",
+			state,
+			dfa.numStates-1,
+		))
+	}
+
+	return memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state)
 }

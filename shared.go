@@ -2,8 +2,6 @@ package autarch
 
 import (
 	"math/bits"
-	"memcore"
-	"memstruct"
 )
 
 /*
@@ -150,6 +148,9 @@ type SymbolDefinition[TObservation any] struct {
 	Name        string
 	Match       func(observation TObservation) bool
 	Observation *TObservation // Optional: original observation value for formatting (e.g., for literal symbols)
+
+	GapLo *TObservation
+	GapHi *TObservation
 }
 
 /*
@@ -392,35 +393,6 @@ type OutcomeResolutionFn[TStateOutcome comparable] func(
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool)
-
-//go:inline
-func determineOutcome[TStateOutcome comparable](
-	subset *dfaStateSubset,
-	stateArray memcore.MarkRaw,
-) (outcome TStateOutcome, ok bool) {
-
-	states := subset.States()
-	if len(states) == 0 {
-		return outcome, false
-	}
-
-	bestStateID := ^uint64(0)
-
-	for _, s := range states {
-		o := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](stateArray, s)
-
-		var zero TStateOutcome
-		if o != zero {
-			if s < bestStateID {
-				bestStateID = s
-				outcome = o
-				ok = true
-			}
-		}
-	}
-
-	return
-}
 
 /*
 OutcomeResolutionFirst selects the accepting outcome with the lowest state ID.

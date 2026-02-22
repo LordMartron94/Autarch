@@ -1,7 +1,6 @@
 package pattern
 
 import (
-	"cmp"
 	"fmt"
 	"strings"
 	"unicode"
@@ -111,7 +110,7 @@ const (
 	precAtom                    // literal(1) / class / grouped
 )
 
-func nodePrec[T cmp.Ordered](n *RegulaAST[T]) regexPrec {
+func nodePrec[T comparable](n *RegulaAST[T]) regexPrec {
 	if n == nil {
 		return precAtom
 	}
@@ -129,7 +128,7 @@ func nodePrec[T cmp.Ordered](n *RegulaAST[T]) regexPrec {
 	}
 }
 
-func isRegexAtom[T cmp.Ordered](n *RegulaAST[T]) bool {
+func isRegexAtom[T comparable](n *RegulaAST[T]) bool {
 	if n == nil {
 		return true
 	}
@@ -145,7 +144,7 @@ func isRegexAtom[T cmp.Ordered](n *RegulaAST[T]) bool {
 	}
 }
 
-func emitRegexWith[T cmp.Ordered](
+func emitRegexWith[T comparable](
 	sb *strings.Builder,
 	n *RegulaAST[T],
 	parentPrec regexPrec,
@@ -265,7 +264,7 @@ func emitRegexWith[T cmp.Ordered](
 	}
 }
 
-func emitLiteralWith[T cmp.Ordered](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T]) error {
+func emitLiteralWith[T comparable](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T]) error {
 	if len(vals) == 0 {
 		if cfg.EpsilonAsNonCapturingGroup {
 			sb.WriteString("(?:)")
@@ -283,7 +282,7 @@ func emitLiteralWith[T cmp.Ordered](sb *strings.Builder, vals []T, cfg RegexEmit
 	return nil
 }
 
-func emitClassWith[T cmp.Ordered](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
+func emitClassWith[T comparable](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
 	if len(cls.ranges) == 0 {
 		if cfg.EmptyClassAsNeverMatch {
 			sb.WriteString("(?!)")

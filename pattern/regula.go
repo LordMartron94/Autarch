@@ -43,7 +43,7 @@ type charClass[TObservation any] struct {
 	ranges []charRange[TObservation] // sorted, merged
 }
 
-type RegulaAST[TObservation cmp.Ordered] struct {
+type RegulaAST[TObservation comparable] struct {
 	kind expressionKind
 
 	literals []TObservation
@@ -424,7 +424,7 @@ func OneOf(chars string) RegulaAST[rune] {
 	return Class(ranges...)
 }
 
-func repeat[TObservation cmp.Ordered](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
+func repeat[TObservation comparable](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
 	return RegulaAST[TObservation]{
 		kind: EXPRESSION_REPEAT,
 		sub:  &sub,

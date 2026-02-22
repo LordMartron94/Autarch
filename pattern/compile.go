@@ -403,6 +403,8 @@ func (b *symbolBuilder[TObs]) buildAlphabet(
 					ID:    gapID,
 					Name:  fmt.Sprintf("gap:(%v,%v)", lo, hi),
 					Match: func(o TObs) bool { return isLess(lo, o) && isLess(o, hi) },
+					GapLo: &lo,
+					GapHi: &hi,
 				})
 			}
 		}
