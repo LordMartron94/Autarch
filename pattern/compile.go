@@ -2,7 +2,6 @@ package pattern
 
 import (
 	"autarch"
-	"cmp"
 	"fmt"
 	"hash/fnv"
 	"memarch"
@@ -51,7 +50,7 @@ Outcome model:
 
 Epsilon transitions are used for composition and can be removed via DFA conversion.
 */
-func RegulaCompileToNFA[TObservation cmp.Ordered, TOutcome comparable](
+func RegulaCompileToNFA[TObservation any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	root RegulaAST[TObservation],
 	acceptOutcome TOutcome,
@@ -108,7 +107,7 @@ Acceptance semantics:
 
 Only accepting states carry semantic outcomes.
 */
-func RegulaCompileToNFAWithBuilder[TObservation cmp.Ordered, TOutcome comparable](
+func RegulaCompileToNFAWithBuilder[TObservation any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	root RegulaAST[TObservation],
 	ctx *RegulaSharedCompilationContext[TObservation],
@@ -151,7 +150,7 @@ Use cases:
 The context should be created once per lexer state, then used to compile all patterns
 in that state.
 */
-type RegulaSharedCompilationContext[TObservation cmp.Ordered] struct {
+type RegulaSharedCompilationContext[TObservation any] struct {
 	builder  *symbolBuilder[TObservation]
 	alphabet []autarch.SymbolDefinition[TObservation]
 	indexer  autarch.SymbolIndexer[TObservation]
@@ -176,7 +175,7 @@ Edge cases:
 - Context must have patterns collected before building alphabet
 - Alphabet should be built once after all patterns are collected
 */
-func RegulaCreateSharedCompilationContext[TObservation cmp.Ordered]() *RegulaSharedCompilationContext[TObservation] {
+func RegulaCreateSharedCompilationContext[TObservation any]() *RegulaSharedCompilationContext[TObservation] {
 	return &RegulaSharedCompilationContext[TObservation]{
 		builder: newSymbolBuilder[TObservation](),
 	}
@@ -243,14 +242,14 @@ type request[T any] struct {
 	ranges []charRange[T]
 }
 
-type symbolBuilder[TObs cmp.Ordered] struct {
+type symbolBuilder[TObs any] struct {
 	nextLogicalID uint64
 	keys          map[autarch.SymbolKey]uint64
 	requests      []request[TObs]
 	physicalMap   map[uint64][]uint64
 }
 
-func newSymbolBuilder[TObs cmp.Ordered]() *symbolBuilder[TObs] {
+func newSymbolBuilder[TObs any]() *symbolBuilder[TObs] {
 	return &symbolBuilder[TObs]{
 		keys:        make(map[autarch.SymbolKey]uint64),
 		physicalMap: make(map[uint64][]uint64),
@@ -330,7 +329,7 @@ func (b *symbolBuilder[TObs]) buildAlphabet(
 		}
 	}
 
-	// Custom sort since we aren't assuming cmp.Ordered
+	// Custom sort since we aren't assuming any
 	slices.SortFunc(points, func(a, b TObs) int {
 		if isLess(a, b) {
 			return -1
@@ -423,14 +422,14 @@ type nfaFragment struct {
 	accept uint64
 }
 
-type thompsonCompiler[TObs cmp.Ordered] struct {
+type thompsonCompiler[TObs any] struct {
 	nextState    uint64
 	transitions  []autarch.Transition[TObs]
 	epsilonEdges map[uint64][]uint64
 	builder      *symbolBuilder[TObs]
 }
 
-func newThompsonCompiler[TObs cmp.Ordered](b *symbolBuilder[TObs]) *thompsonCompiler[TObs] {
+func newThompsonCompiler[TObs any](b *symbolBuilder[TObs]) *thompsonCompiler[TObs] {
 	return &thompsonCompiler[TObs]{
 		builder:      b,
 		epsilonEdges: make(map[uint64][]uint64),
