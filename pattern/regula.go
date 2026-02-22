@@ -4,10 +4,11 @@ import (
 	"slices"
 )
 
-type expressionKind uint8
+//go:generate stringer -type ExpressionKind
+type ExpressionKind uint8
 
 const (
-	EXPRESSION_LITERAL expressionKind = iota
+	EXPRESSION_LITERAL ExpressionKind = iota
 	EXPRESSION_CLASS
 	EXPRESSION_CONCAT
 	EXPRESSION_UNION
@@ -26,7 +27,7 @@ type charClass[TObservation any] struct {
 type positionID uint64
 
 type RegulaAST[TObservation any] struct {
-	kind expressionKind
+	kind ExpressionKind
 
 	// Raw (used before binding)
 	literals []TObservation
@@ -262,12 +263,9 @@ func (r *RegulaASTFactory[TObservation]) Sequence(expressions ...RegulaAST[TObse
 	if len(expressions) == 0 {
 		panic("empty sequence")
 	}
-
-	current := expressions[0]
-	for i := 1; i < len(expressions); i++ {
-		current = current.Then(expressions[i])
-	}
-	return current
+	return buildBalancedTree(expressions, func(l, r RegulaAST[TObservation]) RegulaAST[TObservation] {
+		return l.Then(r)
+	})
 }
 
 /*
@@ -299,12 +297,25 @@ func (r *RegulaASTFactory[TObservation]) AnyOf(expressions ...RegulaAST[TObserva
 	if len(expressions) == 0 {
 		panic("empty alternation")
 	}
+	return buildBalancedTree(expressions, func(l, r RegulaAST[TObservation]) RegulaAST[TObservation] {
+		return l.Or(r)
+	})
+}
 
-	current := expressions[0]
-	for i := 1; i < len(expressions); i++ {
-		current = current.Or(expressions[i])
+func buildBalancedTree[T any](
+	items []T,
+	join func(l, r T) T,
+) T {
+	count := len(items)
+	if count == 1 {
+		return items[0]
 	}
-	return current
+
+	mid := count / 2
+	left := buildBalancedTree(items[:mid], join)
+	right := buildBalancedTree(items[mid:], join)
+
+	return join(left, right)
 }
 
 /*
