@@ -242,7 +242,7 @@ func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
-) ([]*autarch.NFA[TObs, TOutcome], error) {
+) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 
 	if len(instructions) == 0 {
 		return nil, fmt.Errorf("instructions list must be non-empty")
@@ -258,14 +258,14 @@ func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 
 	ctx.fullPrepare(patterns)
 
-	out := make([]*autarch.NFA[TObs, TOutcome], len(instructions))
+	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(instructions))
 
 	for i := range instructions {
 		pat := instructions[i].Pattern
 		outcome := instructions[i].Outcome
 
 		// 2. Map positions to symbols
-		pm := buildPosSymbolMap(pat)
+		pm := buildPosMetadataMap(pat)
 
 		// Initialize follow-set table
 		// follow[p] = set of positions that can follow position p
@@ -379,11 +379,11 @@ func computeGlushkovInfo[TObs any](
 func buildGlushkovNFA[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	ctx *RegulaSharedCompilationContext[TObs],
-	pm posSymbolMap,
+	pm posMetadataMap,
 	follow []positionSet,
 	info glushkovInfo,
-	outcome TOutcome,
-) *autarch.NFA[TObs, TOutcome] {
+	baseOutcome TOutcome,
+) *autarch.NFA[TObs, AnnotatedOutcome[TOutcome]] {
 
 	numStates := uint64(pm.maxPos) + 1
 	transitions := make([]autarch.Transition[TObs], 0)
@@ -423,15 +423,32 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 
 	// 3. Terminal States
 	accepting := make([]bool, numStates)
-	outcomes := make([]TOutcome, numStates)
+	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
 
+	// Helper to build the specific outcome for a state
+	resolveOutcome := func(p positionID) AnnotatedOutcome[TOutcome] {
+		ann := AnnotationID(0)
+		if a, ok := pm.annByPos[p]; ok {
+			ann = a
+		}
+		return AnnotatedOutcome[TOutcome]{
+			Value:      baseOutcome,
+			Annotation: ann,
+		}
+	}
+
+	// 1. Handle Nullable (Start state accepting)
 	if info.nullable {
 		accepting[0] = true
-		outcomes[0] = outcome
+		// Note: The start state doesn't correspond to a position,
+		// so it usually gets the "default" annotation of the root node.
+		outcomes[0] = AnnotatedOutcome[TOutcome]{Value: baseOutcome}
 	}
+
+	// 2. Handle Position States
 	info.last.iter(func(p positionID) {
 		accepting[p] = true
-		outcomes[p] = outcome
+		outcomes[p] = resolveOutcome(p)
 	})
 
 	return autarch.NFACreate(
@@ -448,23 +465,30 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 
 // ------------------------------------------------------------ SUPPORT CODE
 
-type posSymbolMap struct {
+type posMetadataMap struct {
 	symByPos map[positionID]logicalID
+	annByPos map[positionID]AnnotationID
 	maxPos   positionID
 }
 
-func buildPosSymbolMap[TObs any](n *RegulaAST[TObs]) posSymbolMap {
-	pm := posSymbolMap{symByPos: make(map[positionID]logicalID)}
+func buildPosMetadataMap[TObs any](n *RegulaAST[TObs]) posMetadataMap {
+	pm := posMetadataMap{
+		symByPos: make(map[positionID]logicalID),
+		annByPos: make(map[positionID]AnnotationID),
+	}
 	var walk func(*RegulaAST[TObs])
 	walk = func(x *RegulaAST[TObs]) {
 		if x == nil {
 			return
 		}
+
 		switch x.kind {
 		case EXPRESSION_LITERAL:
-			for i := range x.literalPosIDs {
-				p := x.literalPosIDs[i]
+			for i, p := range x.literalPosIDs {
 				pm.symByPos[p] = x.literalSymIDs[i]
+				if x.annotationID != nil {
+					pm.annByPos[p] = *x.annotationID
+				}
 				if p > pm.maxPos {
 					pm.maxPos = p
 				}
@@ -472,6 +496,9 @@ func buildPosSymbolMap[TObs any](n *RegulaAST[TObs]) posSymbolMap {
 		case EXPRESSION_CLASS:
 			p := x.classPosID
 			pm.symByPos[p] = x.classSymID
+			if x.annotationID != nil {
+				pm.annByPos[p] = *x.annotationID
+			}
 			if p > pm.maxPos {
 				pm.maxPos = p
 			}
@@ -498,134 +525,142 @@ func normalizeForGlushkov[TObs any](n *RegulaAST[TObs]) (*RegulaAST[TObs], bool)
 		return nil, false
 	}
 
+	// Capture the annotation from the source node to propagate it
+	ann := n.annotationID
+
 	switch n.kind {
 	case EXPRESSION_LITERAL:
-		// Handle Epsilon (empty literal)
-		if len(n.literals) == 0 {
+		if len(n.literals) <= 1 {
 			return n, false
 		}
-		// Handle multi-symbol literals: "abc" -> (a . b) . c
-		if len(n.literals) > 1 {
-			var cur *RegulaAST[TObs]
-			for i := 0; i < len(n.literals); i++ {
-				leaf := &RegulaAST[TObs]{
-					kind:     EXPRESSION_LITERAL,
-					literals: []TObs{n.literals[i]},
-				}
-				if cur == nil {
-					cur = leaf
-				} else {
-					cur = &RegulaAST[TObs]{kind: EXPRESSION_CONCAT, left: cur, right: leaf}
-				}
+		// "abc" -> ((a . b) . c)
+		// Only 'c' should carry the annotation of the whole string.
+		var cur *RegulaAST[TObs]
+		for i := 0; i < len(n.literals); i++ {
+			leaf := &RegulaAST[TObs]{
+				kind:     EXPRESSION_LITERAL,
+				literals: []TObs{n.literals[i]},
 			}
-			return cur, true
+			// Only the very last leaf gets the parent's annotation
+			if i == len(n.literals)-1 {
+				leaf.annotationID = ann
+			}
+
+			if cur == nil {
+				cur = leaf
+			} else {
+				cur = &RegulaAST[TObs]{kind: EXPRESSION_CONCAT, left: cur, right: leaf}
+			}
 		}
-		return n, false
+		return cur, true
 
 	case EXPRESSION_CLASS:
 		return n, false
 
-	case EXPRESSION_CONCAT, EXPRESSION_UNION:
-		l2, lc := normalizeForGlushkov(n.left)
-		r2, rc := normalizeForGlushkov(n.right)
-		if !lc && !rc {
-			return n, false
+	case EXPRESSION_CONCAT:
+		l2, _ := normalizeForGlushkov(n.left)
+		r2, _ := normalizeForGlushkov(n.right)
+		// Propagate annotation to the right child (the tail)
+		if ann != nil {
+			r2.annotationID = ann
+		}
+		return &RegulaAST[TObs]{kind: n.kind, left: l2, right: r2}, true
+
+	case EXPRESSION_UNION:
+		l2, _ := normalizeForGlushkov(n.left)
+		r2, _ := normalizeForGlushkov(n.right)
+		// If the union is annotated, both paths are terminal
+		if ann != nil {
+			l2.annotationID = ann
+			r2.annotationID = ann
 		}
 		return &RegulaAST[TObs]{kind: n.kind, left: l2, right: r2}, true
 
 	case EXPRESSION_REPEAT:
-		// First, normalize the sub-expression
 		subNormalized, _ := normalizeForGlushkov(n.sub)
 
-		// 1. Handle standard Kleene operators (* and +)
-		// a* is min=0, max=-1
-		// a+ is min=1, max=-1
 		if n.max == -1 {
 			if n.min == 0 || n.min == 1 {
-				return &RegulaAST[TObs]{
+				res := &RegulaAST[TObs]{
 					kind: EXPRESSION_REPEAT,
 					sub:  subNormalized,
 					min:  n.min,
 					max:  -1,
-				}, true
+				}
+				res.annotationID = ann // Annotation on a star/plus triggers on every iteration
+				return res, true
 			}
-			// a{3,} -> a . a . a+
-			return unrollInfiniteRepeat(subNormalized, n.min), true
+			return unrollInfiniteRepeat(subNormalized, n.min, ann), true
 		}
 
-		// 2. Handle Bounded Repetition (a{n, m}, a?, a{n})
-		return unrollBoundedRepeat(subNormalized, n.min, n.max), true
+		return unrollBoundedRepeat(subNormalized, n.min, n.max, ann), true
 	}
 
 	return n, false
 }
 
-// unrollInfiniteRepeat handles a{n,} where n > 1
-func unrollInfiniteRepeat[TObs any](sub *RegulaAST[TObs], min int) *RegulaAST[TObs] {
-	// Result is (sub . sub . ... . sub+)
-	// We need min-1 fixed repetitions followed by a Plus
+func unrollInfiniteRepeat[TObs any](sub *RegulaAST[TObs], min int, ann *AnnotationID) *RegulaAST[TObs] {
 	plusNode := &RegulaAST[TObs]{
 		kind: EXPRESSION_REPEAT,
 		sub:  sub,
 		min:  1,
 		max:  -1,
 	}
+	plusNode.annotationID = ann // Tag the infinite tail
 
 	if min == 0 {
-		node := plusNode.sub.Star()
-		return &node
-	}
-	if min == 1 {
-		return plusNode
+		// a* case (already handled in main switch, but here for safety)
+		res := sub.Star()
+		res.annotationID = ann
+		return &res
 	}
 
-	return concatChain(sub, min-1, plusNode)
+	// a{3,} -> (a . (a . a+))
+	return concatChain(sub, min-1, plusNode, nil)
 }
 
-// unrollBoundedRepeat handles a{min, max}
-func unrollBoundedRepeat[TObs any](sub *RegulaAST[TObs], min, max int) *RegulaAST[TObs] {
-	// a{0,0} is epsilon (represented as an empty literal)
+func unrollBoundedRepeat[TObs any](sub *RegulaAST[TObs], min, max int, ann *AnnotationID) *RegulaAST[TObs] {
 	if max == 0 {
-		return &RegulaAST[TObs]{kind: EXPRESSION_LITERAL, literals: nil}
+		epsilon := &RegulaAST[TObs]{kind: EXPRESSION_LITERAL, literals: nil}
+		epsilon.annotationID = ann
+		return epsilon
 	}
 
-	// Create an "optional" version of the sub-expression: (sub | epsilon)
-	// In Glushkov, an optional node is just a node where nullable=true.
-	// We represent this as a Union with an empty literal.
 	epsilon := &RegulaAST[TObs]{kind: EXPRESSION_LITERAL, literals: nil}
-	makeOptional := func(node *RegulaAST[TObs]) *RegulaAST[TObs] {
+
+	makeOptional := func(node *RegulaAST[TObs], currentAnn *AnnotationID) *RegulaAST[TObs] {
+		// When making optional, the epsilon path and the node path are both terminal
+		optEpsilon := &RegulaAST[TObs]{kind: EXPRESSION_LITERAL, literals: nil}
+		optEpsilon.annotationID = currentAnn
+		node.annotationID = currentAnn
+
 		return &RegulaAST[TObs]{
 			kind:  EXPRESSION_UNION,
 			left:  node,
-			right: epsilon,
+			right: optEpsilon,
 		}
 	}
 
-	// Case 1: Purely optional range, e.g., a{0, 3} -> (a . (a . a?)?)?
 	if min == 0 {
 		var cur = epsilon
 		for i := 0; i < max; i++ {
 			if i == 0 {
-				cur = makeOptional(sub)
+				cur = makeOptional(sub, ann)
 			} else {
-				// This nesting (sub . cur)? ensures we match 1, 2, or 3
+				// (sub . cur)?
+				// Annotation only goes on the 'outer' optional shell for the sequence
 				cur = makeOptional(&RegulaAST[TObs]{
 					kind:  EXPRESSION_CONCAT,
 					left:  sub,
 					right: cur,
-				})
+				}, ann)
 			}
 		}
 		return cur
 	}
 
-	// Case 2: Fixed + Optional, e.g., a{2, 4} -> (a . a) . (a . a?)?
-	fixedPart := concatChain(sub, min, nil)
-	optionalPart := unrollBoundedRepeat(sub, 0, max-min)
-
-	if optionalPart.kind == EXPRESSION_LITERAL && len(optionalPart.literals) == 0 {
-		return fixedPart
-	}
+	fixedPart := concatChain(sub, min, nil, nil)
+	optionalPart := unrollBoundedRepeat(sub, 0, max-min, ann)
 
 	return &RegulaAST[TObs]{
 		kind:  EXPRESSION_CONCAT,
@@ -634,10 +669,11 @@ func unrollBoundedRepeat[TObs any](sub *RegulaAST[TObs], min, max int) *RegulaAS
 	}
 }
 
-// concatChain creates a sequence of N sub-nodes.
-// If tail is provided, it is appended to the end.
-func concatChain[TObs any](sub *RegulaAST[TObs], count int, tail *RegulaAST[TObs]) *RegulaAST[TObs] {
+func concatChain[TObs any](sub *RegulaAST[TObs], count int, tail *RegulaAST[TObs], ann *AnnotationID) *RegulaAST[TObs] {
 	if count <= 0 {
+		if tail != nil && ann != nil {
+			tail.annotationID = ann
+		}
 		return tail
 	}
 
@@ -646,15 +682,22 @@ func concatChain[TObs any](sub *RegulaAST[TObs], count int, tail *RegulaAST[TObs
 		res = tail
 	} else {
 		res = sub
+		if count == 1 {
+			res.annotationID = ann
+		}
 		count--
 	}
 
 	for i := 0; i < count; i++ {
-		res = &RegulaAST[TObs]{
+		// As we build the chain backwards, the first "res" we create is the tail
+		newRes := &RegulaAST[TObs]{
 			kind:  EXPRESSION_CONCAT,
 			left:  sub,
 			right: res,
 		}
+		// If this is the outer-most concat of the sequence, it's not terminal,
+		// but the right-most child inside it is.
+		res = newRes
 	}
 	return res
 }

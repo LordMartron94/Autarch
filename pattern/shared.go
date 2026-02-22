@@ -6,12 +6,18 @@ import (
 	"memarch"
 )
 
+/* AnnotatedOutcome represents an outcome mapped with annotation ID. */
+type AnnotatedOutcome[TOutcome any] struct {
+	Value      TOutcome
+	Annotation AnnotationID
+}
+
 /* RegulaToNFACompiler is an abstraction that provides the API boundary for compiling a RegulaAST into NFAs. */
 type RegulaToNFACompiler[TObs any, TOutcome comparable] func(
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
-) ([]*autarch.NFA[TObs, TOutcome], error)
+) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error)
 
 /*
 RegulaNFAInstruction represents a single pattern compilation request.

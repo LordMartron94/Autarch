@@ -86,32 +86,51 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
-) ([]*autarch.NFA[TObs, TOutcome], error) {
+) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 	if len(instructions) == 0 {
 		return nil, fmt.Errorf("instructions list must be non-empty")
 	}
 
 	patterns := make([]*RegulaAST[TObs], len(instructions))
-	for i, instruction := range instructions {
-		patterns[i] = instruction.Pattern
+	for i := range instructions {
+		patterns[i] = instructions[i].Pattern
 	}
 
 	ctx.fullPrepare(patterns)
-	out := make([]*autarch.NFA[TObs, TOutcome], len(patterns))
+
+	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(patterns))
 
 	for i, instruction := range instructions {
-		c := newThompsonCompiler[TObs](ctx.expander)
+		c := newThompsonCompiler[TObs, TOutcome](ctx.expander, instruction.Outcome)
 		frag := c.compile(instruction.Pattern)
 
 		numStates := c.nextState
-
-		outcomes := make([]TOutcome, numStates)
+		outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
 		accepting := make([]bool, numStates)
 
-		accepting[frag.accept] = true
-		outcomes[frag.accept] = instruction.Outcome
+		// 1. Process annotations captured in the map during recursion.
+		// Since multiple nodes might exit at the same state (especially with epsilon),
+		// we map them to the state-indexed slices.
+		for state, annID := range c.annotations {
+			accepting[state] = true
+			outcomes[state] = AnnotatedOutcome[TOutcome]{
+				Value:      instruction.Outcome,
+				Annotation: annID,
+			}
+		}
 
-		patternNFA := autarch.NFACreate(
+		// 2. Final Accept State logic.
+		// Use the 'accepting' slice to check if we already set an outcome
+		// via a specific node annotation. If not, set the base pattern outcome.
+		if !accepting[frag.accept] {
+			accepting[frag.accept] = true
+			outcomes[frag.accept] = AnnotatedOutcome[TOutcome]{
+				Value: instruction.Outcome,
+				// Annotation is default 0
+			}
+		}
+
+		out[i] = autarch.NFACreate(
 			alloc,
 			ctx.alphabet,
 			c.transitions,
@@ -121,8 +140,6 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 			outcomes,
 			ctx.indexer,
 		)
-
-		out[i] = patternNFA
 	}
 
 	return out, nil
@@ -137,7 +154,7 @@ type nfaFragment struct {
 	accept uint64
 }
 
-type thompsonCompiler[TObs any] struct {
+type thompsonCompiler[TObs any, TOutcome any] struct {
 	nextState uint64
 
 	// Dense hot path: append-only transitions.
@@ -148,26 +165,31 @@ type thompsonCompiler[TObs any] struct {
 
 	// Logical → physical symbol expansion is now strategy-agnostic.
 	expander symbolExpander
+
+	baseOutcome TOutcome
+	annotations map[uint64]AnnotationID
 }
 
-func newThompsonCompiler[TObs any](expander symbolExpander) *thompsonCompiler[TObs] {
-	return &thompsonCompiler[TObs]{
+func newThompsonCompiler[TObs any, TOutcome any](expander symbolExpander, base TOutcome) *thompsonCompiler[TObs, TOutcome] {
+	return &thompsonCompiler[TObs, TOutcome]{
 		expander:     expander,
 		epsilonEdges: make(map[uint64][]uint64),
+		annotations:  make(map[uint64]AnnotationID),
+		baseOutcome:  base,
 	}
 }
 
-func (c *thompsonCompiler[TObs]) newState() uint64 {
+func (c *thompsonCompiler[TObs, TOutcome]) newState() uint64 {
 	s := c.nextState
 	c.nextState++
 	return s
 }
 
-func (c *thompsonCompiler[TObs]) newFrag() nfaFragment {
+func (c *thompsonCompiler[TObs, TOutcome]) newFrag() nfaFragment {
 	return nfaFragment{start: c.newState(), accept: c.newState()}
 }
 
-func (c *thompsonCompiler[TObs]) eps(from, to uint64) {
+func (c *thompsonCompiler[TObs, TOutcome]) eps(from, to uint64) {
 	c.epsilonEdges[from] = append(c.epsilonEdges[from], to)
 }
 
@@ -175,7 +197,7 @@ func (c *thompsonCompiler[TObs]) eps(from, to uint64) {
 // This is the ordering you want for efficiency:
 //  1. expand once,
 //  2. fast loop append transitions.
-func (c *thompsonCompiler[TObs]) emitLogical(from uint64, lid logicalID, to uint64) {
+func (c *thompsonCompiler[TObs, TOutcome]) emitLogical(from uint64, lid logicalID, to uint64) {
 	phys := c.expander.expand(lid)
 	if len(phys) == 0 {
 		return
@@ -195,40 +217,43 @@ func (c *thompsonCompiler[TObs]) emitLogical(from uint64, lid logicalID, to uint
 	}
 }
 
-func (c *thompsonCompiler[TObs]) compile(n *RegulaAST[TObs]) nfaFragment {
+func (c *thompsonCompiler[TObs, TOutcome]) compile(n *RegulaAST[TObs]) nfaFragment {
+	var frag nfaFragment
+
 	switch n.kind {
 	case EXPRESSION_LITERAL:
-		return c.literalSequence(n.literalSymIDs)
-
+		frag = c.literalSequence(n.literalSymIDs)
 	case EXPRESSION_CLASS:
-		return c.class(n.classSymID)
-
+		frag = c.class(n.classSymID)
 	case EXPRESSION_CONCAT:
 		a := c.compile(n.left)
 		b := c.compile(n.right)
 		c.eps(a.accept, b.start)
-		return nfaFragment{a.start, b.accept}
-
+		frag = nfaFragment{a.start, b.accept}
 	case EXPRESSION_UNION:
 		a := c.compile(n.left)
 		b := c.compile(n.right)
-
 		out := c.newFrag()
 		c.eps(out.start, a.start)
 		c.eps(out.start, b.start)
 		c.eps(a.accept, out.accept)
 		c.eps(b.accept, out.accept)
-		return out
-
+		frag = out
 	case EXPRESSION_REPEAT:
-		return c.repeat(n)
-
+		frag = c.repeat(n)
 	default:
-		panic("unknown regula node kind")
+		panic("unknown node kind")
 	}
+
+	// PROPAGATION: If this node is annotated, tag the fragment's exit state.
+	if n.annotationID != nil {
+		c.annotations[frag.accept] = *n.annotationID
+	}
+
+	return frag
 }
 
-func (c *thompsonCompiler[TObs]) literalSequence(ids []logicalID) nfaFragment {
+func (c *thompsonCompiler[TObs, TOutcome]) literalSequence(ids []logicalID) nfaFragment {
 	if len(ids) == 0 {
 		f := c.newFrag()
 		c.eps(f.start, f.accept)
@@ -247,13 +272,13 @@ func (c *thompsonCompiler[TObs]) literalSequence(ids []logicalID) nfaFragment {
 	return nfaFragment{start, cur}
 }
 
-func (c *thompsonCompiler[TObs]) class(lid logicalID) nfaFragment {
+func (c *thompsonCompiler[TObs, TOutcome]) class(lid logicalID) nfaFragment {
 	f := c.newFrag()
 	c.emitLogical(f.start, lid, f.accept)
 	return f
 }
 
-func (c *thompsonCompiler[TObs]) repeat(n *RegulaAST[TObs]) nfaFragment {
+func (c *thompsonCompiler[TObs, TOutcome]) repeat(n *RegulaAST[TObs]) nfaFragment {
 	// Fast-path common quantifiers first (hot).
 	if n.min == 0 && n.max == -1 { // *
 		a := c.compile(n.sub)

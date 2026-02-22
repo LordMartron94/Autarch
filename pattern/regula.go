@@ -26,6 +26,12 @@ type charClass[TObservation any] struct {
 
 type positionID uint64
 
+/*
+AnnotationID serves as a mapping key the client can use to associate nodes with a certain annotation.
+These IDs are included in the compilation step and can thus serve to disambiguate and keep semantic context.
+*/
+type AnnotationID uint64
+
 type RegulaAST[TObservation any] struct {
 	kind ExpressionKind
 
@@ -49,6 +55,14 @@ type RegulaAST[TObservation any] struct {
 
 	min, max int
 	sub      *RegulaAST[TObservation]
+
+	annotationID *AnnotationID
+}
+
+/* WithAnnotationID sets the annotation id for this node. */
+func (r *RegulaAST[TObservation]) WithAnnotationID(id AnnotationID) *RegulaAST[TObservation] {
+	r.annotationID = &id
+	return r
 }
 
 /*

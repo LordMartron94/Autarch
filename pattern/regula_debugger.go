@@ -310,6 +310,10 @@ func (d *RegulaDebugger[TObservation]) getMeta(g *RegulaAST[TObservation]) strin
 		}
 	}
 
+	if g.annotationID != nil {
+		parts = append(parts, fmt.Sprintf("ann:%d", g.annotationID))
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}
