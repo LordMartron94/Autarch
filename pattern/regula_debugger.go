@@ -30,6 +30,9 @@ type RegulaDebugFormatter[TObservation any] struct {
 	FormatLogicalID  func(logicalID) string
 	FormatPositionID func(positionID) string
 
+	// FormatAnnotationID allows custom rendering of the annotation (e.g., "ann:RuleName")
+	FormatAnnotationID func(AnnotationID) string
+
 	/* Coloring layer (nil = no color) */
 	ColorKind       func(string) string
 	ColorPayload    func(string) string
@@ -81,6 +84,9 @@ func NewCleanFormatter[T any](obsFormatter func(T) string) RegulaDebugFormatter[
 				return fmt.Sprintf("{%d}", min)
 			}
 			return fmt.Sprintf("{%d,%d}", min, *max)
+		},
+		FormatAnnotationID: func(id AnnotationID) string {
+			return fmt.Sprintf("ann:%d", id)
 		},
 	}
 }
@@ -136,7 +142,7 @@ type RegulaDebugger[TObservation any] struct {
 	Formatter  RegulaDebugFormatter[TObservation]
 	Enumerator RegulaEdgeEnumerator[TObservation]
 
-	GutterWidth int // Column where metadata starts
+	GutterWidth int
 
 	GlyphMid   string
 	GlyphLast  string
@@ -175,8 +181,6 @@ func (d *RegulaDebugger[TObservation]) walk(
 	if n == nil {
 		return nil
 	}
-
-	// 1. Build the tree branch prefix
 	if depth > 0 {
 		if isLast {
 			w.WriteString(prefix + d.GlyphLast)
@@ -185,10 +189,8 @@ func (d *RegulaDebugger[TObservation]) walk(
 		}
 	}
 
-	// 2. Write the node content
 	d.writeNodeLine(w, n, depth)
 
-	// 3. Prepare prefix for children
 	newPrefix := prefix
 	if depth > 0 {
 		if isLast {
@@ -202,7 +204,6 @@ func (d *RegulaDebugger[TObservation]) walk(
 	for i, e := range edges {
 		d.walk(e.node, w, newPrefix, i == len(edges)-1, depth+1)
 	}
-
 	return nil
 }
 
@@ -210,7 +211,6 @@ func (d *RegulaDebugger[TObservation]) writeNodeLine(w *strings.Builder, g *Regu
 	f := d.Formatter
 	startPos := w.Len()
 
-	// ---- Kind ----
 	kindStr := f.FormatKind(g.kind)
 	if f.ColorKind != nil {
 		kindStr = f.ColorKind(kindStr)
@@ -218,7 +218,6 @@ func (d *RegulaDebugger[TObservation]) writeNodeLine(w *strings.Builder, g *Regu
 	w.WriteString(kindStr)
 	w.WriteByte(' ')
 
-	// ---- Payload ----
 	payload := d.getPayload(g)
 	if payload != "" {
 		if f.ColorPayload != nil {
@@ -227,13 +226,9 @@ func (d *RegulaDebugger[TObservation]) writeNodeLine(w *strings.Builder, g *Regu
 		w.WriteString(payload)
 	}
 
-	// ---- Metadata Gutter ----
 	meta := d.getMeta(g)
 	if meta != "" {
-		// Calculate how much we've written in THIS line so far
-		// This is an approximation due to ANSI codes, but functional for plain text
 		currentLineLen := d.visibleLen(w.String()[startPos:])
-		// Adjust for tree depth indentation (assuming 3 chars per level)
 		totalOffset := currentLineLen + (depth * 3)
 
 		padding := d.GutterWidth - totalOffset
@@ -247,7 +242,6 @@ func (d *RegulaDebugger[TObservation]) writeNodeLine(w *strings.Builder, g *Regu
 		}
 		w.WriteString(meta)
 	}
-
 	w.WriteByte('\n')
 }
 
@@ -266,7 +260,6 @@ func (d *RegulaDebugger[TObservation]) getPayload(g *RegulaAST[TObservation]) st
 			res = append(res, f.FormatObservation(v))
 		}
 		return "(" + strings.Join(res, " ") + ")"
-
 	case EXPRESSION_CLASS:
 		if f.FormatClass != nil {
 			return f.FormatClass(g.class.ranges)
@@ -276,7 +269,6 @@ func (d *RegulaDebugger[TObservation]) getPayload(g *RegulaAST[TObservation]) st
 			res = append(res, fmt.Sprintf("%s..%s", f.FormatObservation(r.lo), f.FormatObservation(r.hi)))
 		}
 		return "[" + strings.Join(res, ", ") + "]"
-
 	case EXPRESSION_REPEAT:
 		maxVal := g.max
 		var maxPtr *int
@@ -292,12 +284,7 @@ func (d *RegulaDebugger[TObservation]) getMeta(g *RegulaAST[TObservation]) strin
 	f := d.Formatter
 	var parts []string
 
-	// Binding status
-	if g.literalBound || g.classBound {
-		parts = append(parts, "bound")
-	}
-
-	// Position IDs (Glushkov)
+	// Position IDs
 	if f.FormatPositionID != nil {
 		if g.kind == EXPRESSION_CLASS && g.classPosID != 0 {
 			parts = append(parts, "p:"+f.FormatPositionID(g.classPosID))
@@ -310,8 +297,19 @@ func (d *RegulaDebugger[TObservation]) getMeta(g *RegulaAST[TObservation]) strin
 		}
 	}
 
+	// Binding status
+	if g.literalBound || g.classBound {
+		parts = append(parts, "bound")
+	}
+
+	// Annotation handling (Dereference the pointer)
 	if g.annotationID != nil {
-		parts = append(parts, fmt.Sprintf("ann:%d", g.annotationID))
+		val := *g.annotationID
+		if f.FormatAnnotationID != nil {
+			parts = append(parts, f.FormatAnnotationID(val))
+		} else {
+			parts = append(parts, fmt.Sprintf("ann:%d", val))
+		}
 	}
 
 	if len(parts) == 0 {
@@ -320,10 +318,7 @@ func (d *RegulaDebugger[TObservation]) getMeta(g *RegulaAST[TObservation]) strin
 	return "«" + strings.Join(parts, " ") + "»"
 }
 
-// visibleLen helps align columns by ignoring (some) ANSI escape sequences if present
 func (d *RegulaDebugger[TObservation]) visibleLen(s string) int {
-	// Simple heuristic: ignore common ANSI color codes
-	// In a production scenario, use a regex or a terminal library
 	count := 0
 	inEsc := false
 	for _, r := range s {
