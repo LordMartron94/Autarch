@@ -26,14 +26,18 @@ type charClass[TObservation any] struct {
 type RegulaAST[TObservation any] struct {
 	kind expressionKind
 
+	// Raw (used before binding)
 	literals []TObservation
 	class    charClass[TObservation]
+
+	// Bound (used after binding)
+	literalIDs []logicalID
+	classID    logicalID
 
 	left, right *RegulaAST[TObservation]
 
 	min, max int
-
-	sub *RegulaAST[TObservation]
+	sub      *RegulaAST[TObservation]
 }
 
 /*
