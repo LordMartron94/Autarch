@@ -47,6 +47,197 @@ type glushkovInfo struct {
 	last     positionSet
 }
 
+/*
+RegulaCompileToNFAGlushkov compiles a batch of Regula AST patterns into ε-free NFAs
+using Glushkov’s construction (also known as the position automaton).
+
+This algorithm constructs an automaton where:
+
+  - There is exactly one start state (state 0)
+  - Each symbol occurrence in the regular expression becomes one state (a “position”)
+  - Transitions are labeled by the symbol of the destination position
+  - No epsilon transitions exist
+
+This form is particularly well-suited for large-scale lexer pipelines, as ε-free NFAs
+determinize into smaller and faster DFAs compared to Thompson-style ε-NFAs.
+
+────────────────────────────────────────────────────────────
+Conceptual Overview
+────────────────────────────────────────────────────────────
+
+For each pattern, the compiler performs four major phases:
+
+1) Structural normalization
+2) Shared symbol binding
+3) Follow-set analysis (Glushkov metadata computation)
+4) State machine synthesis
+
+The construction is based on computing, for every sub-expression:
+
+  - nullable — whether the expression can match the empty string
+  - first    — the set of positions that may appear first
+  - last     — the set of positions that may appear last
+
+Additionally, a global follow relation is built:
+
+	follow[p] = all positions that may immediately follow position p
+
+These sets are computed in a single structural traversal of the AST.
+
+Once computed, the NFA is synthesized as:
+
+  - Start state → all positions in first
+  - For each p → q in follow, emit transition p → q
+  - Accepting states = all positions in last
+  - If nullable, start state is also accepting
+
+────────────────────────────────────────────────────────────
+Normalization Guarantees
+────────────────────────────────────────────────────────────
+
+Before analysis, patterns are normalized into Glushkov-compatible form:
+
+  - Multi-symbol literals are rewritten into concatenations
+    "abc" → (a . b) . c
+
+  - Bounded repetitions are unrolled structurally
+    a{2,4}, a?, a{3,}, etc.
+
+  - Only the following repeat forms remain:
+    sub*
+    sub+
+
+  - Epsilon is represented explicitly as an empty literal node
+
+After normalization:
+
+  - Every leaf node corresponds to exactly one symbol position
+  - Each position has a globally unique ID
+  - The AST becomes suitable for direct position-based automaton construction
+
+────────────────────────────────────────────────────────────
+Shared Compilation Context
+────────────────────────────────────────────────────────────
+
+All patterns in the instruction batch are compiled under a single
+RegulaSharedCompilationContext.
+
+The context is responsible for:
+
+  - Assigning logical symbol IDs
+  - Managing alphabet expansion (e.g. character classes → physical symbols)
+  - Maintaining symbol indexing for DFA/NFA backends
+
+This guarantees:
+
+  - Symbol consistency across all compiled NFAs
+  - Zero per-transition map lookups during construction
+  - Efficient determinization downstream
+
+Callers MUST reuse the same context when combining NFAs into DFAs.
+
+────────────────────────────────────────────────────────────
+Performance Characteristics
+────────────────────────────────────────────────────────────
+
+Let:
+
+	P = number of symbol positions in the pattern
+
+Then:
+
+  - Follow-set construction is O(P² / word_size) using dense bitsets
+  - AST traversal is linear in node count
+  - NFA synthesis is linear in number of follow relations
+
+This is the standard optimal complexity for Glushkov automata.
+
+The resulting NFA contains:
+
+  - P + 1 states
+  - No epsilon transitions
+  - Exactly one transition per follow relation (after symbol expansion)
+
+────────────────────────────────────────────────────────────
+Parameters
+────────────────────────────────────────────────────────────
+
+alloc:
+
+	Allocation function used by the underlying autarch NFA backend.
+
+instructions:
+
+	A non-empty slice of RegulaNFAInstruction values, each containing:
+
+	  • Pattern — Regula AST to compile
+	  • Outcome — accepting state payload for that pattern
+
+	Each pattern is compiled into its own NFA.
+
+ctx:
+
+	Shared compilation context that binds symbol identities, alphabet,
+	expansion rules, and indexers.
+
+	Must be prepared only via this function or compatible Regula
+	compilation pipelines.
+
+────────────────────────────────────────────────────────────
+Returns
+────────────────────────────────────────────────────────────
+
+On success:
+
+	A slice of ε-free NFAs, one per instruction, in the same order.
+
+On failure:
+
+	An error if the instruction list is empty or if normalization fails.
+
+────────────────────────────────────────────────────────────
+Invariants of Returned NFAs
+────────────────────────────────────────────────────────────
+
+For each returned NFA:
+
+  - Exactly one start state (state 0)
+  - No epsilon transitions
+  - States correspond to symbol positions
+  - Accepting states carry the provided outcome
+  - Alphabet and symbol IDs match ctx
+
+These NFAs are immediately suitable for:
+
+  - Large union construction
+  - Subset determinization
+  - DFA minimization
+
+────────────────────────────────────────────────────────────
+Intended Use
+────────────────────────────────────────────────────────────
+
+This is the preferred Regula compilation pipeline for:
+
+  - Lexer generation
+  - Token recognizers
+  - High-performance DFA frontends
+  - Large pattern batches
+
+Use Thompson ε-NFAs only when semantic structure or debugging clarity
+is required.
+
+────────────────────────────────────────────────────────────
+Errors
+────────────────────────────────────────────────────────────
+
+Returns an error if:
+
+  - instructions is empty
+
+All normalized AST structures are assumed valid; semantic validation
+must be performed upstream.
+*/
 func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],

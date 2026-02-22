@@ -3,7 +3,15 @@ package pattern
 import (
 	"autarch"
 	"foundation/hash"
+	"memarch"
 )
+
+/* RegulaToNFACompiler is an abstraction that provides the API boundary for compiling a RegulaAST into NFAs. */
+type RegulaToNFACompiler[TObs any, TOutcome comparable] func(
+	alloc memarch.AllocationFn,
+	instructions []RegulaNFAInstruction[TObs, TOutcome],
+	ctx *RegulaSharedCompilationContext[TObs],
+) ([]*autarch.NFA[TObs, TOutcome], error)
 
 /*
 RegulaNFAInstruction represents a single pattern compilation request.
