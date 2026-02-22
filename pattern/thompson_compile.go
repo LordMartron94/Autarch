@@ -198,10 +198,10 @@ func (c *thompsonCompiler[TObs]) emitLogical(from uint64, lid logicalID, to uint
 func (c *thompsonCompiler[TObs]) compile(n *RegulaAST[TObs]) nfaFragment {
 	switch n.kind {
 	case EXPRESSION_LITERAL:
-		return c.literalSequence(n.literalIDs)
+		return c.literalSequence(n.literalSymIDs)
 
 	case EXPRESSION_CLASS:
-		return c.class(n.classID)
+		return c.class(n.classSymID)
 
 	case EXPRESSION_CONCAT:
 		a := c.compile(n.left)

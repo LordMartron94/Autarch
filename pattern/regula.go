@@ -23,6 +23,8 @@ type charClass[TObservation any] struct {
 	ranges []charRange[TObservation] // sorted, merged
 }
 
+type positionID uint64
+
 type RegulaAST[TObservation any] struct {
 	kind expressionKind
 
@@ -30,9 +32,17 @@ type RegulaAST[TObservation any] struct {
 	literals []TObservation
 	class    charClass[TObservation]
 
+	// symbol identity (shared, deduped)
+	literalSymIDs []logicalID
+	classSymID    logicalID
+
+	// occurrence identity (unique per occurrence, for Glushkov)
+	literalPosIDs []positionID
+	classPosID    positionID
+
 	// Bound (used after binding)
-	literalIDs []logicalID
-	classID    logicalID
+	literalBound bool
+	classBound   bool
 
 	left, right *RegulaAST[TObservation]
 

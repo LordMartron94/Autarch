@@ -154,19 +154,20 @@ func (ctx *RegulaSharedCompilationContext[TObs]) buildAlphabet() {
 	ctx.indexer = autarch.SymbolIndexerBuild(ctx.alphabet)
 }
 
-func (ctx *RegulaSharedCompilationContext[TObs]) bindLogicalIDs(pattern *RegulaAST[TObs]) {
-	bindLogicalIDs(pattern, ctx.collector)
+func (ctx *RegulaSharedCompilationContext[TObs]) bindIDs(pattern *RegulaAST[TObs]) {
+	var next positionID = 0
+	bindIDs(pattern, ctx.collector, &next)
 }
 
 func (ctx *RegulaSharedCompilationContext[TObs]) fullPrepare(patterns []*RegulaAST[TObs]) {
 	for _, pattern := range patterns {
-		ctx.collector.collect(pattern)
+		ctx.collectPattern(pattern)
 	}
 
 	ctx.buildAlphabet()
 
 	for _, pattern := range patterns {
-		ctx.bindLogicalIDs(pattern)
+		ctx.bindIDs(pattern)
 	}
 }
 

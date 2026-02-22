@@ -236,30 +236,46 @@ func buildAlphabet[TObs any](
 	}
 }
 
-func bindLogicalIDs[TObs any](
+func bindIDs[TObs any](
 	n *RegulaAST[TObs],
 	c *symbolCollector[TObs],
+	nextPos *positionID,
 ) {
 	if n == nil {
 		return
 	}
 
 	switch n.kind {
+
 	case EXPRESSION_LITERAL:
-		n.literalIDs = make([]logicalID, len(n.literals))
+		l := len(n.literals)
+
+		n.literalSymIDs = make([]logicalID, l)
+		n.literalPosIDs = make([]positionID, l)
+
 		for i, v := range n.literals {
-			n.literalIDs[i] = c.literal(v)
+			n.literalSymIDs[i] = c.literal(v)
+
+			*nextPos++
+			n.literalPosIDs[i] = *nextPos
 		}
 
+		n.literalBound = true
+
 	case EXPRESSION_CLASS:
-		n.classID = c.class(n.class)
+		n.classSymID = c.class(n.class)
+
+		*nextPos++
+		n.classPosID = *nextPos
+
+		n.classBound = true
 
 	case EXPRESSION_CONCAT, EXPRESSION_UNION:
-		bindLogicalIDs(n.left, c)
-		bindLogicalIDs(n.right, c)
+		bindIDs(n.left, c, nextPos)
+		bindIDs(n.right, c, nextPos)
 
 	case EXPRESSION_REPEAT:
-		bindLogicalIDs(n.sub, c)
+		bindIDs(n.sub, c, nextPos)
 	}
 }
 
