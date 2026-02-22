@@ -1,27 +1,7 @@
 package pattern
 
 import (
-	"cmp"
 	"slices"
-)
-
-var Digit = Class(
-	Range('0', '9'),
-)
-
-var Lower = Class(
-	Range('a', 'z'),
-)
-
-var Upper = Class(
-	Range('A', 'Z'),
-)
-
-var Word = Class(
-	Range('a', 'z'),
-	Range('A', 'Z'),
-	Range('0', '9'),
-	Range('_', '_'),
 )
 
 type expressionKind uint8
@@ -43,7 +23,7 @@ type charClass[TObservation any] struct {
 	ranges []charRange[TObservation] // sorted, merged
 }
 
-type RegulaAST[TObservation comparable] struct {
+type RegulaAST[TObservation any] struct {
 	kind expressionKind
 
 	literals []TObservation
@@ -226,6 +206,20 @@ func (r RegulaAST[TObservation]) Repeat(min, max int) RegulaAST[TObservation] {
 	return repeat(r, min, max)
 }
 
+/* RegulaASTFactory encapsulates the factory for constructing Regula AST. */
+type RegulaASTFactory[TObservation any] struct {
+	cmpFn func(a, b TObservation) int
+}
+
+/* RegulaASTFactoryCreate constructs a regula AST factory. */
+func RegulaASTFactoryCreate[TObservation any](
+	cmpFn func(a, b TObservation) int,
+) *RegulaASTFactory[TObservation] {
+	return &RegulaASTFactory[TObservation]{
+		cmpFn: cmpFn,
+	}
+}
+
 /*
 	Sequence creates a concatenation pattern from multiple expressions in order.
 
@@ -250,7 +244,7 @@ Edge cases:
 - Single expression returns that expression unchanged
 - The resulting pattern maintains references to all input patterns
 */
-func Sequence[TObservation cmp.Ordered](expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
+func (r *RegulaASTFactory[TObservation]) Sequence(expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
 	if len(expressions) == 0 {
 		panic("empty sequence")
 	}
@@ -287,7 +281,7 @@ Edge cases:
 - If multiple expressions can match the same input, the NFA will accept all matching paths
 - The resulting pattern maintains references to all input patterns
 */
-func AnyOf[TObservation cmp.Ordered](expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
+func (r *RegulaASTFactory[TObservation]) AnyOf(expressions ...RegulaAST[TObservation]) RegulaAST[TObservation] {
 	if len(expressions) == 0 {
 		panic("empty alternation")
 	}
@@ -315,7 +309,7 @@ Time complexity: O(1) - creates a range struct
 Space complexity: O(1) - constant memory overhead
 
 Prerequisites:
-- lo and hi must be comparable using cmp.Ordered
+- lo and hi must be any using any
 - lo should be <= hi for logical consistency (not enforced)
 
 Edge cases:
@@ -323,7 +317,7 @@ Edge cases:
 - If lo == hi, the range matches exactly one observation
 - Ranges are normalized and merged when used in Class
 */
-func Range[TObservation cmp.Ordered](lo, hi TObservation) charRange[TObservation] {
+func (r *RegulaASTFactory[TObservation]) Range(lo, hi TObservation) charRange[TObservation] {
 	return charRange[TObservation]{
 		lo: lo,
 		hi: hi,
@@ -347,7 +341,7 @@ Time complexity: O(n log n) where n is the number of ranges (due to sorting and 
 Space complexity: O(n) - stores normalized ranges
 
 Prerequisites:
-- All ranges must have comparable bounds using cmp.Ordered
+- All ranges must have any bounds using any
 - At least one range should be provided (empty class matches nothing)
 
 Edge cases:
@@ -356,8 +350,8 @@ Edge cases:
 - Ranges are sorted by lower bound during normalization
 - The resulting pattern maintains normalized ranges internally
 */
-func Class[TObservation cmp.Ordered](ranges ...charRange[TObservation]) RegulaAST[TObservation] {
-	normalized := normalizeRanges(ranges)
+func (r *RegulaASTFactory[TObservation]) Class(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
+	normalized := normalizeRanges(ranges, r.cmpFn)
 	return RegulaAST[TObservation]{
 		kind:  EXPRESSION_CLASS,
 		class: charClass[TObservation]{ranges: normalized},
@@ -380,7 +374,7 @@ Time complexity: O(1) - creates an AST node
 Space complexity: O(n) where n is the number of values (stores the sequence)
 
 Prerequisites:
-- All values must be comparable using cmp.Ordered
+- All values must be any using any
 - At least one value should be provided (empty literal matches empty input)
 
 Edge cases:
@@ -389,42 +383,35 @@ Edge cases:
 - Multiple values create a pattern matching the exact sequence
 - The resulting pattern maintains a copy of the input values
 */
-func Literal[TObservation cmp.Ordered](values ...TObservation) RegulaAST[TObservation] {
+func (r *RegulaASTFactory[TObservation]) Literal(values ...TObservation) RegulaAST[TObservation] {
 	return RegulaAST[TObservation]{
 		kind:     EXPRESSION_LITERAL,
 		literals: values,
 	}
 }
 
-func LiteralString[TObservation cmp.Ordered](s string) RegulaAST[TObservation] {
+func LiteralString(
+	f *RegulaASTFactory[rune],
+	s string,
+) RegulaAST[rune] {
 	runes := []rune(s)
-
-	if len(runes) == 0 {
-		return RegulaAST[TObservation]{}
-	}
-
-	values := make([]TObservation, len(runes))
-	for i, r := range runes {
-		values[i] = TObservation(r)
-	}
-
-	return Literal(values...)
+	return f.Literal(runes...)
 }
 
-func WordLiteral(s string) RegulaAST[rune] {
-	return LiteralString[rune](s)
+func WordLiteral(factory *RegulaASTFactory[rune], s string) RegulaAST[rune] {
+	return LiteralString(factory, s)
 }
 
-func OneOf(chars string) RegulaAST[rune] {
+func OneOf(factory *RegulaASTFactory[rune], chars string) RegulaAST[rune] {
 	runes := []rune(chars)
 	ranges := make([]charRange[rune], len(runes))
 	for i, r := range runes {
-		ranges[i] = Range(r, r)
+		ranges[i] = factory.Range(r, r)
 	}
-	return Class(ranges...)
+	return factory.Class(ranges...)
 }
 
-func repeat[TObservation comparable](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
+func repeat[TObservation any](sub RegulaAST[TObservation], min, max int) RegulaAST[TObservation] {
 	return RegulaAST[TObservation]{
 		kind: EXPRESSION_REPEAT,
 		sub:  &sub,
@@ -433,7 +420,10 @@ func repeat[TObservation comparable](sub RegulaAST[TObservation], min, max int) 
 	}
 }
 
-func normalizeRanges[T cmp.Ordered](in []charRange[T]) []charRange[T] {
+func normalizeRanges[T any](
+	in []charRange[T],
+	cmpFn func(a, b T) int,
+) []charRange[T] {
 	if len(in) == 0 {
 		return nil
 	}
@@ -442,7 +432,7 @@ func normalizeRanges[T cmp.Ordered](in []charRange[T]) []charRange[T] {
 	copy(ranges, in)
 
 	slices.SortFunc(ranges, func(a, b charRange[T]) int {
-		return cmp.Compare(a.lo, b.lo)
+		return cmpFn(a.lo, b.lo)
 	})
 
 	out := make([]charRange[T], 0, len(ranges))
@@ -452,10 +442,14 @@ func normalizeRanges[T cmp.Ordered](in []charRange[T]) []charRange[T] {
 	for i := 1; i < len(ranges); i++ {
 		r := ranges[i]
 
-		if r.lo <= cur.hi {
-			if r.hi > cur.hi {
+		// if r.lo <= cur.hi
+		if cmpFn(r.lo, cur.hi) <= 0 {
+
+			// if r.hi > cur.hi
+			if cmpFn(r.hi, cur.hi) > 0 {
 				cur.hi = r.hi
 			}
+
 		} else {
 			out = append(out, cur)
 			cur = r
@@ -464,4 +458,226 @@ func normalizeRanges[T cmp.Ordered](in []charRange[T]) []charRange[T] {
 
 	out = append(out, cur)
 	return out
+}
+
+// -------------------------------------------------------------- TEMPLATES
+
+/*
+============================================================
+TEMPLATES (ASCII / rune-based)
+============================================================
+
+This file defines high-level, reusable Regula pattern templates.
+
+Important:
+- These templates are *ASCII/rune-oriented*. They intentionally depend on
+  rune literals like 'a', '0', '\n', etc.
+- Therefore, they cannot be generic over arbitrary observation types.
+  We enforce this by constraining TObservation to be rune-compatible.
+
+If you need templates for other alphabets (e.g. byte-based, token-based),
+define separate template sets with appropriate constraints and constants.
+*/
+
+/*
+RegulaTemplates provides factory-bound, reusable patterns for common ASCII constructs.
+
+Design:
+  - All templates are constructed through RegulaASTFactory to ensure the factory’s
+    invariants apply (range normalization, comparator semantics, future adjacency rules).
+  - TObservation is constrained to be rune-compatible, because these templates use
+    rune literals ('a', '0', '\n', etc.).
+
+Type constraints:
+- `~rune` means the underlying type is compatible with rune (alias of int32).
+*/
+type RegulaTemplates[TObservation ~rune] struct {
+	f *RegulaASTFactory[TObservation]
+}
+
+/*
+RegulaTemplatesCreate constructs a template set bound to a specific Regula AST factory.
+
+Why factory-bound:
+- Prevents bypassing normalization and comparator logic
+- Keeps template construction consistent with the rest of the Regula pipeline
+
+Panics:
+- Panics if f is nil, because templates cannot function without a factory.
+*/
+func RegulaTemplatesCreate[TObservation ~rune](
+	f *RegulaASTFactory[TObservation],
+) *RegulaTemplates[TObservation] {
+	if f == nil {
+		panic("RegulaTemplatesCreate: nil factory")
+	}
+	return &RegulaTemplates[TObservation]{f: f}
+}
+
+/*
+Digit matches a single ASCII digit: [0-9].
+
+Use cases:
+- Integers / numeric literals
+- Version components
+- Lexical tokenization for numbers
+
+Time:  O(1) to build node (range normalization is trivial here)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Digit() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('0'), TObservation('9')),
+	)
+}
+
+/*
+Lower matches a single ASCII lowercase letter: [a-z].
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Lower() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('a'), TObservation('z')),
+	)
+}
+
+/*
+Upper matches a single ASCII uppercase letter: [A-Z].
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Upper() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('A'), TObservation('Z')),
+	)
+}
+
+/*
+Alpha matches a single ASCII letter: [a-zA-Z].
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Alpha() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('a'), TObservation('z')),
+		t.f.Range(TObservation('A'), TObservation('Z')),
+	)
+}
+
+/*
+Alnum matches a single ASCII alphanumeric: [a-zA-Z0-9].
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Alnum() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('a'), TObservation('z')),
+		t.f.Range(TObservation('A'), TObservation('Z')),
+		t.f.Range(TObservation('0'), TObservation('9')),
+	)
+}
+
+/*
+Word matches a single ASCII “word” character: [a-zA-Z0-9_].
+
+This matches the conventional lexer definition for identifiers.
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Word() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation('a'), TObservation('z')),
+		t.f.Range(TObservation('A'), TObservation('Z')),
+		t.f.Range(TObservation('0'), TObservation('9')),
+		t.f.Range(TObservation('_'), TObservation('_')),
+	)
+}
+
+/*
+Whitespace matches a single ASCII whitespace character: [ \t\n\r].
+
+Note:
+- This is “common whitespace” for many DSLs.
+- If you need vertical tab, form feed, Unicode spaces, etc., define a separate template.
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) Whitespace() RegulaAST[TObservation] {
+	return t.f.Class(
+		t.f.Range(TObservation(' '), TObservation(' ')),
+		t.f.Range(TObservation('\t'), TObservation('\t')),
+		t.f.Range(TObservation('\n'), TObservation('\n')),
+		t.f.Range(TObservation('\r'), TObservation('\r')),
+	)
+}
+
+/*
+Identifier matches a conventional ASCII identifier:
+
+	start = [a-zA-Z_]
+	rest  = [a-zA-Z0-9_]*
+
+So the full pattern is:
+
+	start rest
+
+Time:  O(1) to build AST (node count constant)
+Space: O(1)
+
+Semantics:
+- Does not accept empty input
+- Does not accept leading digit
+*/
+func (t *RegulaTemplates[TObservation]) Identifier() RegulaAST[TObservation] {
+	start := t.f.Class(
+		t.f.Range(TObservation('a'), TObservation('z')),
+		t.f.Range(TObservation('A'), TObservation('Z')),
+		t.f.Range(TObservation('_'), TObservation('_')),
+	)
+
+	rest := t.Word().Star()
+
+	return start.Then(rest)
+}
+
+/*
+Integer matches one or more ASCII digits:
+
+	[0-9]+
+
+Time:  O(1)
+Space: O(1)
+
+Semantics:
+- Does not accept empty input
+*/
+func (t *RegulaTemplates[TObservation]) Integer() RegulaAST[TObservation] {
+	return t.Digit().Plus()
+}
+
+/*
+SignedInteger matches an optional sign followed by an integer:
+
+	[+-]?[0-9]+
+
+Implementation note:
+- We build the sign set directly via Class/Range to avoid relying on rune-only helpers.
+
+Time:  O(1)
+Space: O(1)
+*/
+func (t *RegulaTemplates[TObservation]) SignedInteger() RegulaAST[TObservation] {
+	sign := t.f.Class(
+		t.f.Range(TObservation('+'), TObservation('+')),
+		t.f.Range(TObservation('-'), TObservation('-')),
+	).Optional()
+
+	return sign.Then(t.Integer())
 }

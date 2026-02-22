@@ -110,7 +110,7 @@ const (
 	precAtom                    // literal(1) / class / grouped
 )
 
-func nodePrec[T comparable](n *RegulaAST[T]) regexPrec {
+func nodePrec[T any](n *RegulaAST[T]) regexPrec {
 	if n == nil {
 		return precAtom
 	}
@@ -128,7 +128,7 @@ func nodePrec[T comparable](n *RegulaAST[T]) regexPrec {
 	}
 }
 
-func isRegexAtom[T comparable](n *RegulaAST[T]) bool {
+func isRegexAtom[T any](n *RegulaAST[T]) bool {
 	if n == nil {
 		return true
 	}
@@ -144,7 +144,7 @@ func isRegexAtom[T comparable](n *RegulaAST[T]) bool {
 	}
 }
 
-func emitRegexWith[T comparable](
+func emitRegexWith[T any](
 	sb *strings.Builder,
 	n *RegulaAST[T],
 	parentPrec regexPrec,
@@ -264,7 +264,7 @@ func emitRegexWith[T comparable](
 	}
 }
 
-func emitLiteralWith[T comparable](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T]) error {
+func emitLiteralWith[T any](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T]) error {
 	if len(vals) == 0 {
 		if cfg.EpsilonAsNonCapturingGroup {
 			sb.WriteString("(?:)")
@@ -282,7 +282,7 @@ func emitLiteralWith[T comparable](sb *strings.Builder, vals []T, cfg RegexEmitC
 	return nil
 }
 
-func emitClassWith[T comparable](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
+func emitClassWith[T any](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
 	if len(cls.ranges) == 0 {
 		if cfg.EmptyClassAsNeverMatch {
 			sb.WriteString("(?!)")
