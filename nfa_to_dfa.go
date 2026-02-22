@@ -6,222 +6,266 @@ import (
 	"memcore"
 	"memforge"
 	"memstruct"
+	"unsafe"
 )
 
-/*
-NFAToDFA converts a Non-Deterministic Finite Automaton to an equivalent
-Deterministic Finite Automaton using subset construction.
+// ---------------------------------------------------------------------
+// SUBSET REGISTRY
+// ---------------------------------------------------------------------
 
-The algorithm builds DFA states as sets of NFA states, starting with the
-epsilon closure of the NFA's starting states. Each DFA state represents
-all possible NFA states that could be active after processing a prefix.
+type subsetRegistry[TSymbol any, TStateOutcome comparable] struct {
+	// Key: raw bytes of subset bitset words.
+	// Value: DFA state id.
+	mapping map[string]uint64
 
-The resolution function determines which outcome to assign when multiple
-accepting NFA states are merged into a single DFA state. Non-accepting DFA
-states carry no semantic outcome (tracked via an explicit accepting set).
+	subsets       []dfaStateSubset
+	accepting     []bool
+	outcomes      []TStateOutcome
+	nfaStateCount uint64
+}
 
-Use cases:
-- Converting NFAs to executable DFAs
-- Optimizing automata for efficient execution
-- Preparing automata for minimization
-- Custom outcome resolution during conversion
+func newSubsetRegistry[TS any, TO comparable](nfaCount uint64) *subsetRegistry[TS, TO] {
+	return &subsetRegistry[TS, TO]{
+		mapping:       make(map[string]uint64),
+		subsets:       make([]dfaStateSubset, 0),
+		accepting:     make([]bool, 0),
+		outcomes:      make([]TO, 0),
+		nfaStateCount: nfaCount,
+	}
+}
 
-Time complexity: O(2^n * a) worst case where n is NFA states, a is alphabet size
-Space complexity: O(2^n * a) for DFA states and transitions
+// subsetKey returns a stable string key representing the subset's bitset.
+// It is safe for len(words)==0 (degenerate NFA with 0 states).
+//
+// IMPORTANT: The returned string aliases the underlying bytes.
+// In this codebase, subsets are immutable after creation, so this is safe.
+func subsetKey(sub *dfaStateSubset) string {
+	if len(sub.words) == 0 {
+		return ""
+	}
+	b := unsafe.Slice((*byte)(unsafe.Pointer(&sub.words[0])), len(sub.words)*8)
+	return string(b)
+}
 
-Prerequisites:
-- nfa must be a valid NFA instance
-- minTempAllocatorMemory and maxTempAllocatorMemory must be sufficient
-- dfaAllocationFn must provide memory for the resulting DFA
-- resolutionFn must be a valid OutcomeResolutionFn (nil uses default: OutcomeResolutionFirst)
+func (r *subsetRegistry[TS, TO]) getID(sub *dfaStateSubset) (uint64, bool) {
+	id, exists := r.mapping[subsetKey(sub)]
+	return id, exists
+}
 
-Edge cases:
-- Panics if temporary allocator exceeds maxTempAllocatorMemory
-- Empty NFA results in single-state DFA
-- Worst-case exponential blowup possible (rare in practice)
-- Uses linear search for subset matching (intentional design choice)
-- If resolutionFn is nil, uses OutcomeResolutionFirst as default
+func (r *subsetRegistry[TS, TO]) register(
+	sub dfaStateSubset,
+	nfa *NFA[TS, TO],
+	resFn OutcomeResolutionFn[TO],
+) uint64 {
+	id := uint64(len(r.subsets))
 
-Outcome semantics:
-- Accepting DFA states are tracked via a boolean accepting set
-- Outcomes are only meaningful for accepting states
-- Lexer error handling / fallback behavior is delegated to higher-level execution layers
-*/
+	r.mapping[subsetKey(&sub)] = id
+	r.subsets = append(r.subsets, sub)
+
+	acc, out := resolveDFAOutcome(sub, nfa, resFn)
+	r.accepting = append(r.accepting, acc)
+	r.outcomes = append(r.outcomes, out)
+
+	return id
+}
+
+// ---------------------------------------------------------------------
+// OPTIMIZATION CONTEXT
+// ---------------------------------------------------------------------
+
+// moveContext carries pre-allocated buffers to avoid heap thrashing.
+type moveContext struct {
+	nfaStateCount uint64
+
+	// seen dedups move targets without allocating a map.
+	seen *dfaStateSubset
+
+	// scratch stores unique move targets for one (subset, symbol) computation.
+	scratch []uint64
+}
+
+func newMoveContext(nfaStateCount uint64) *moveContext {
+	return &moveContext{
+		nfaStateCount: nfaStateCount,
+		seen:          dfaStateSubsetCreate(nfaStateCount, nil),
+		scratch:       make([]uint64, 0, nfaStateCount),
+	}
+}
+
+func (c *moveContext) reset() {
+	c.seen.Clear()
+	c.scratch = c.scratch[:0]
+}
+
+// ---------------------------------------------------------------------
+// CORE CONVERTER
+// ---------------------------------------------------------------------
+
 func NFAToDFA[TSymbol any, TStateOutcome comparable](
 	nfa *NFA[TSymbol, TStateOutcome],
-	minTempAllocatorMemory, maxTempAllocatorMemory memcore.MemoryUnitBytes,
-	dfaAllocationFn memarch.AllocationFn,
-	resolutionFn OutcomeResolutionFn[TStateOutcome],
+	minMem, maxMem memcore.MemoryUnitBytes,
+	dfaAlloc memarch.AllocationFn,
+	resFn OutcomeResolutionFn[TStateOutcome],
 ) *DFA[TSymbol, TStateOutcome] {
-	if resolutionFn == nil {
-		resolutionFn = OutcomeResolutionFirst[TStateOutcome]
+	if resFn == nil {
+		resFn = OutcomeResolutionFirst[TStateOutcome]
 	}
 
-	// ───────────────────────────────────────────────────────────────
-	//  Temporary region allocator
-	// ───────────────────────────────────────────────────────────────
-	allocator := memforge.DynamicLinearAllocatorCreateFunction(
-		uint64(minTempAllocatorMemory),
-		func(currentCap, neededCap uint64) uint64 {
-			newSize := max(currentCap*2, neededCap)
-			if newSize > uint64(maxTempAllocatorMemory) {
-				panic(fmt.Errorf("subset construction needs too much memory: need=%v max=%v", newSize, maxTempAllocatorMemory))
-			}
-			return newSize
-		},
-	)
-	defer memforge.DynamicLinearAllocatorDestroy(allocator)
+	allocHandle := createTempAllocator(minMem, maxMem)
+	defer memforge.DynamicLinearAllocatorDestroy(allocHandle)
 
-	// ───────────────────────────────────────────────────────────────
-	//  NFA static information
-	// ───────────────────────────────────────────────────────────────
-	accArray := NFAAcceptingGet(nfa) // Array[bool]
-	outArray := NFAOutcomesGet(nfa)  // Array[TStateOutcome]
-
-	nfaStateCount := memstruct.ArrayCapacityGet[bool](accArray)
+	nfaStateCount := memstruct.ArrayCapacityGet[bool](NFAAcceptingGet(nfa))
 	alphabet := NFAAlphabetGet(nfa)
-	alphabetSize := len(alphabet)
 
-	// Sizing hint only
+	registry := newSubsetRegistry[TSymbol, TStateOutcome](nfaStateCount)
+	moveCtx := newMoveContext(nfaStateCount)
+
+	// Old behavior sizing hint: n^2 (not tight, but consistent with prior).
 	maxDFAStates := nfaStateCount * nfaStateCount
 
-	// ───────────────────────────────────────────────────────────────
-	//  Worklist queue (stores DFA subsets) – lives in manual memory
-	// ───────────────────────────────────────────────────────────────
 	worklist, _ := memarch.MemArchQueueCreate[dfaStateSubset](
-		func(sizeBytes, alignment uint64) memcore.MarkRaw {
-			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
+		func(sz, al uint64) memcore.MarkRaw {
+			return memforge.DynamicLinearAllocatorMallocUnsafe(allocHandle, sz, al)
 		},
 		maxDFAStates,
 	)
 
-	// ───────────────────────────────────────────────────────────────
-	//  Subset → ID mapping (Go slice)
-	// ───────────────────────────────────────────────────────────────
-	subsets := make([]dfaStateSubset, 0, maxDFAStates)
-
-	dfaAccepting := make([]bool, 0, maxDFAStates)
-	dfaOutcomes := make([]TStateOutcome, 0, maxDFAStates)
-
-	findSubsetID := func(target *dfaStateSubset) (uint64, bool) {
-		for i := range subsets {
-			if subsets[i].Equals(target) {
-				return uint64(i), true
-			}
-		}
-		return 0, false
-	}
-
-	addSubset := func(sub dfaStateSubset) uint64 {
-		id := uint64(len(subsets))
-		subsets = append(subsets, sub)
-
-		allStates := sub.States()
-
-		acceptStates := make([]uint64, 0, len(allStates))
-		acceptOutcomes := make([]TStateOutcome, 0, len(allStates))
-
-		for _, s := range allStates {
-			if memstruct.ArrayItemGetAtUnsafe[bool](accArray, s) {
-				acceptStates = append(acceptStates, s)
-				acceptOutcomes = append(acceptOutcomes, memstruct.ArrayItemGetAtUnsafe[TStateOutcome](outArray, s))
-			}
-		}
-
-		if len(acceptStates) == 0 {
-			dfaAccepting = append(dfaAccepting, false)
-			var zero TStateOutcome
-			dfaOutcomes = append(dfaOutcomes, zero) // ignored when non-accepting
-		} else {
-			outcome, ok := resolutionFn(acceptStates, acceptOutcomes)
-			if ok {
-				dfaAccepting = append(dfaAccepting, true)
-				dfaOutcomes = append(dfaOutcomes, outcome)
-			} else {
-				// Resolution chose no outcome → non-accepting DFA state
-				dfaAccepting = append(dfaAccepting, false)
-
-				var zero TStateOutcome
-				dfaOutcomes = append(dfaOutcomes, zero) // ignored when non-accepting
-			}
-		}
-
-		memstruct.QueuePushUnsafe(worklist, sub)
-		return id
-	}
-
-	indexer := NFAIndexerGet(nfa)
-
-	// ───────────────────────────────────────────────────────────────
-	//  Initialize with ε-closure(start) as DFA state 0
-	// ───────────────────────────────────────────────────────────────
+	// -----------------------------------------------------------------
+	// 1) Entry point MUST be DFA state 0 (invariant)
+	// -----------------------------------------------------------------
 	startStates := NFAStartingStatesGet(nfa)
-	startClosure := NFAEpsilonClosureCompute(nfa, startStates)
-	startSubset := *dfaStateSubsetCreate(startClosure)
+	entryClosure := NFAEpsilonClosureCompute(nfa, startStates)
+	entrySub := *dfaStateSubsetCreate(nfaStateCount, entryClosure)
 
-	_ = addSubset(startSubset)
+	_ = registry.register(entrySub, nfa, resFn)   // ID 0
+	memstruct.QueuePushUnsafe(worklist, entrySub) // first processed subset
 
-	// ───────────────────────────────────────────────────────────────
-	//  Subset construction loop
-	// ───────────────────────────────────────────────────────────────
-	dfaTransitions := make([]Transition[TSymbol], 0, maxDFAStates*uint64(alphabetSize))
+	// Sink (empty subset) is created lazily, exactly when first needed,
+	// matching the old discovery order.
+	var sinkInit bool
+	var sinkID uint64
+	var sinkSub dfaStateSubset
 
+	// -----------------------------------------------------------------
+	// 2) Subset construction loop (ordering matches OLD)
+	//    - BFS by queue order starting from entry
+	//    - symbols in increasing order
+	//    - transitions appended in that same order
+	// -----------------------------------------------------------------
+	var transitions []Transition[TSymbol]
 	for !memstruct.QueueIsEmpty[dfaStateSubset](worklist) {
-		subset := memstruct.QueuePopUnsafe[dfaStateSubset](worklist)
+		currentSub := memstruct.QueuePopUnsafe[dfaStateSubset](worklist)
+		currentID, _ := registry.getID(&currentSub)
 
-		currentID, found := findSubsetID(&subset)
-		if !found {
-			panic("NFAToDFA: subset popped from queue but not present in subset list")
-		}
+		for symID := uint64(0); symID < uint64(len(alphabet)); symID++ {
+			moveCtx.reset()
+			computeMove(nfa, &currentSub, symID, moveCtx)
 
-		for symbolID := uint64(0); symbolID < uint64(alphabetSize); symbolID++ {
-
-			nfaMoves := make(map[uint64]struct{})
-
-			for _, state := range subset.States() {
-				key := [2]uint64{state, symbolID}
-				nextStates, exists := nfa.transitions[key]
-				if !exists {
-					continue
+			var nextID uint64
+			if len(moveCtx.scratch) == 0 {
+				// No move targets => empty subset transition.
+				// Create & enqueue sink the first time it is encountered
+				// (same as OLD, which discovers it on demand).
+				if !sinkInit {
+					sinkSub = *dfaStateSubsetCreate(nfaStateCount, nil) // all-zero bitset
+					sinkID = registry.register(sinkSub, nfa, resFn)
+					memstruct.QueuePushUnsafe(worklist, sinkSub)
+					sinkInit = true
 				}
-				for _, ns := range nextStates {
-					nfaMoves[ns] = struct{}{}
+				nextID = sinkID
+			} else {
+				closure := NFAEpsilonClosureCompute(nfa, moveCtx.scratch)
+				nextSub := *dfaStateSubsetCreate(nfaStateCount, closure)
+
+				var found bool
+				nextID, found = registry.getID(&nextSub)
+				if !found {
+					nextID = registry.register(nextSub, nfa, resFn)
+					memstruct.QueuePushUnsafe(worklist, nextSub)
 				}
 			}
 
-			moveSlice := make([]uint64, 0, len(nfaMoves))
-			for ns := range nfaMoves {
-				moveSlice = append(moveSlice, ns)
-			}
-
-			nfaClosure := NFAEpsilonClosureCompute(nfa, moveSlice)
-			newSubset := *dfaStateSubsetCreate(nfaClosure)
-
-			nextID, exists := findSubsetID(&newSubset)
-			if !exists {
-				nextID = addSubset(newSubset)
-			}
-
-			symDef := alphabet[symbolID]
-			symbol := SymbolCreate[TSymbol](symDef.Name, symbolID)
-
-			dfaTransitions = append(dfaTransitions, Transition[TSymbol]{
+			transitions = append(transitions, Transition[TSymbol]{
 				CurrentState: currentID,
-				Symbol:       symbol,
+				Symbol:       SymbolCreate[TSymbol](alphabet[symID].Name, symID),
 				NextState:    nextID,
 			})
 		}
 	}
 
-	// ───────────────────────────────────────────────────────────────
-	//  Build DFA object
-	// ───────────────────────────────────────────────────────────────
 	return DFACreate(
-		dfaAllocationFn,
+		dfaAlloc,
 		alphabet,
-		dfaTransitions,
-		dfaAccepting,
-		dfaOutcomes,
-		indexer,
+		transitions,
+		registry.accepting,
+		registry.outcomes,
+		NFAIndexerGet(nfa),
+	)
+}
+
+// ---------------------------------------------------------------------
+// HELPERS
+// ---------------------------------------------------------------------
+
+func computeMove[TS any, TO comparable](
+	nfa *NFA[TS, TO],
+	sub *dfaStateSubset,
+	symID uint64,
+	ctx *moveContext,
+) {
+	// Deterministic traversal:
+	// - subset.States() ordering
+	// - targets slice ordering per transition
+	// This eliminates the old map-iteration nondeterminism.
+	for _, s := range sub.States() {
+		key := [2]uint64{s, symID}
+		if targets, ok := nfa.transitions[key]; ok {
+			for _, t := range targets {
+				if !ctx.seen.Has(t) {
+					ctx.seen.Add(t)
+					ctx.scratch = append(ctx.scratch, t)
+				}
+			}
+		}
+	}
+}
+
+func resolveDFAOutcome[TS any, TO comparable](
+	sub dfaStateSubset,
+	nfa *NFA[TS, TO],
+	resFn OutcomeResolutionFn[TO],
+) (bool, TO) {
+	accArray := NFAAcceptingGet(nfa)
+	outArray := NFAOutcomesGet(nfa)
+
+	var aStates []uint64
+	var aOutcomes []TO
+
+	for _, s := range sub.States() {
+		if memstruct.ArrayItemGetAtUnsafe[bool](accArray, s) {
+			aStates = append(aStates, s)
+			aOutcomes = append(aOutcomes, memstruct.ArrayItemGetAtUnsafe[TO](outArray, s))
+		}
+	}
+
+	if len(aStates) == 0 {
+		var zero TO
+		return false, zero
+	}
+
+	outcome, ok := resFn(aStates, aOutcomes)
+	return ok, outcome
+}
+
+func createTempAllocator(minMem, maxMem memcore.MemoryUnitBytes) memcore.MarkRaw {
+	return memforge.DynamicLinearAllocatorCreateFunction(
+		uint64(minMem),
+		func(curr, need uint64) uint64 {
+			nextSize := max(curr*2, need)
+			if nextSize > uint64(maxMem) {
+				panic(fmt.Errorf("NFA->DFA allocation overflow: %d > %d", nextSize, maxMem))
+			}
+			return nextSize
+		},
 	)
 }

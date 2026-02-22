@@ -253,15 +253,15 @@ func getTransitionIDX(alphabetSize, currentState, symbolID uint64) uint64 {
 	return currentState*alphabetSize + symbolID
 }
 
-const maxNFAStates uint64 = 256
-const wordsPerSubset uint64 = maxNFAStates / 64
-
 type dfaStateSubset struct {
-	words [wordsPerSubset]uint64
+	words []uint64
 }
 
-func dfaStateSubsetCreate(states []uint64) *dfaStateSubset {
-	subset := &dfaStateSubset{}
+func dfaStateSubsetCreate(numStates uint64, states []uint64) *dfaStateSubset {
+	numWords := (numStates >> 6) + 1
+	subset := &dfaStateSubset{
+		words: make([]uint64, numWords),
+	}
 	for _, state := range states {
 		subset.Add(state)
 	}
@@ -271,8 +271,7 @@ func dfaStateSubsetCreate(states []uint64) *dfaStateSubset {
 //go:inline
 func (s *dfaStateSubset) Add(state uint64) {
 	w := state >> 6
-	b := state & 63
-	s.words[w] |= 1 << b
+	s.words[w] |= 1 << (state & 63)
 }
 
 //go:inline
@@ -305,6 +304,9 @@ func (s *dfaStateSubset) Union(a, b *dfaStateSubset) {
 
 //go:inline
 func (s *dfaStateSubset) Equals(o *dfaStateSubset) bool {
+	if len(s.words) != len(o.words) {
+		return false
+	}
 	for i := range s.words {
 		if s.words[i] != o.words[i] {
 			return false
