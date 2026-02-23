@@ -37,7 +37,7 @@ Edge cases:
 - Invalid symbols return errors
 - Empty input returns outcome from state 0
 */
-type DFA[TObservation any, TStateOutcome comparable] struct {
+type DFA[TObservation, TStateOutcome any] struct {
 	accepting   memcore.MarkRaw // Array[bool]
 	outcomes    memcore.MarkRaw // Array[TStateOutcome]
 	transitions memcore.MarkRaw // Array[uint64]
@@ -71,11 +71,11 @@ Prerequisites:
 Edge cases:
 - Returns raw memory handle - use memstruct.ArrayItemGetAtUnsafe to access
 */
-func DFAOutcomesGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+func DFAOutcomesGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return dfa.outcomes
 }
 
-func DFAAcceptingGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+func DFAAcceptingGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return dfa.accepting
 }
 
@@ -96,7 +96,7 @@ Space complexity: O(1)
 Prerequisites:
 - dfa must be a valid DFA instance
 */
-func DFAIndexerGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
+func DFAIndexerGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
 	return dfa.indexer
 }
 
@@ -121,7 +121,7 @@ Edge cases:
 - Empty alphabet means no valid input symbols
 - Alphabet order determines symbol ID assignment
 */
-func DFAAlphabetGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
+func DFAAlphabetGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
 	return dfa.alphabet
 }
 
@@ -189,7 +189,7 @@ Design principle:
 
 Semantic mutation belongs in automaton-building passes — not here.
 */
-func DFACreate[TObservation any, TStateOutcome comparable](
+func DFACreate[TObservation, TStateOutcome any](
 	allocFn memarch.AllocationFn,
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
@@ -384,7 +384,14 @@ Edge cases:
 - Returns error if invalid symbol encountered
 - Empty input returns outcome from state 0
 */
-func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome], input []TObservation) (TStateOutcome, error) {
+func DFARun[TObservation, TStateOutcome any](
+	dfa *DFA[TObservation, TStateOutcome],
+	input []TObservation,
+) (
+	outcome TStateOutcome,
+	accepting bool,
+	err error,
+) {
 	state := uint64(0)
 	arrayCursor := memstruct.ArrayCursorCreate[uint64](dfa.transitions) // cursor to avoid dereffing the array header each time
 
@@ -392,7 +399,7 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 		symbols := dfa.indexer(observation)
 		if len(symbols) == 0 {
 			var zero TStateOutcome
-			return zero, fmt.Errorf("invalid symbol: %v", observation)
+			return zero, false, fmt.Errorf("invalid symbol: %v", observation)
 		}
 
 		if len(symbols) != 1 {
@@ -412,11 +419,7 @@ func DFARun[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, T
 	}
 
 	out, ok := DFAStateOutcome(dfa, state)
-	if !ok {
-		var zero TStateOutcome
-		return zero, nil
-	}
-	return out, nil
+	return out, ok, nil
 
 }
 
@@ -453,7 +456,7 @@ Design notes:
 - Uses direct transition table scanning for maximal performance
 - Matches DFA formal definition: outgoing labeled edges from a state
 */
-func DFAAvailableSymbols[TObservation any, TStateOutcome comparable](
+func DFAAvailableSymbols[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) []SymbolDefinition[TObservation] {
@@ -517,7 +520,7 @@ Design notes:
 - Directly scans transition table row (no maps, no allocations beyond slice)
 - Preserves DFA formal invariant: one transition per symbol
 */
-func DFATransitionsFrom[TObservation any, TStateOutcome comparable](
+func DFATransitionsFrom[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) []struct {
@@ -557,7 +560,7 @@ func DFATransitionsFrom[TObservation any, TStateOutcome comparable](
 }
 
 /* DFAIsDeadState checks whether the state is dead. */
-func DFAIsDeadState[TObservation any, TStateOutcome comparable](
+func DFAIsDeadState[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) bool {
@@ -588,7 +591,7 @@ Edge cases:
 - Nil formatter functions fall back to default formatting
 - Formatting functions may return strings of varying lengths
 */
-type DFADebugFormatter[TObservation any, TStateOutcome comparable] struct {
+type DFADebugFormatter[TObservation, TStateOutcome any] struct {
 	FormatSymbolName   func(id uint64, def SymbolDefinition[TObservation]) string
 	FormatStateOutcome func(outcome TStateOutcome) string
 	FormatSymbolID     func(symbolID uint64) string
@@ -618,7 +621,7 @@ Edge cases:
 - Transition table shows all state-symbol combinations
 - If formatter is nil, uses default formatting (backward compatible)
 */
-func DFADebugPrint[TObservation any, TStateOutcome comparable](
+func DFADebugPrint[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	formatter *DFADebugFormatter[TObservation, TStateOutcome],
 ) string {
@@ -756,7 +759,7 @@ Edge cases:
 - Cursor remains valid as long as DFA is not modified
 - Multiple cursors can be created for parallel processing
 */
-func DFACursorGet[TObservation any, TStateOutcome comparable](dfa *DFA[TObservation, TStateOutcome]) memstruct.ArrayCursor[uint64] {
+func DFACursorGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memstruct.ArrayCursor[uint64] {
 	return memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 }
 
@@ -782,7 +785,7 @@ Edge cases:
 - Multiple predecessors per state-symbol are possible
 - Structure is indexed by symbol ID, then target state
 */
-func DFAPredecessorSets[TObservation any, TStateOutcome comparable](
+func DFAPredecessorSets[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 ) [][][]uint64 {
 	incoming := make([][][]uint64, dfa.alphabetSize)
@@ -829,7 +832,7 @@ Edge cases:
 - Returns error if observation is not in alphabet
 - Returns next state even if it's a dead state
 */
-func DFAStep[TObservation any, TStateOutcome comparable](
+func DFAStep[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	currentState uint64,
 	observation TObservation,
@@ -860,9 +863,6 @@ func DFAStep[TObservation any, TStateOutcome comparable](
 /*
 DFAStateOutcome retrieves the semantic outcome associated with an accepting DFA state.
 
-Only accepting states carry outcomes. Non-accepting states have no semantic value
-and will return ok=false.
-
 The outcome typically represents a token type, rule result, or other semantic
 information produced when the automaton reaches an accepting configuration.
 
@@ -888,15 +888,17 @@ Design notes:
 - Zero values of TStateOutcome have no semantic meaning
 - This matches formal DFA theory: acceptance is a state property, not a value hack
 */
-func DFAStateOutcome[TObservation any, TStateOutcome comparable](
+func DFAStateOutcome[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) (outcome TStateOutcome, ok bool) {
+	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
+
 	if !memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state) {
 		return outcome, false
 	}
 
-	return memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state), true
+	return outcome, true
 }
 
 /*
@@ -916,7 +918,7 @@ Where:
 
 	s = number of states in the DFA
 */
-func DFAStates[TObservation any, TStateOutcome comparable, TAs foundation.Integer](
+func DFAStates[TObservation, TStateOutcome any, TAs foundation.Integer](
 	dfa *DFA[TObservation, TStateOutcome],
 ) []TAs {
 	states := make([]TAs, dfa.numStates)
@@ -948,7 +950,7 @@ Prerequisites:
 Panics:
 - If state is out of range
 */
-func DFAIsAccepting[TObservation any, TStateOutcome comparable](
+func DFAIsAccepting[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) bool {

@@ -87,7 +87,7 @@ func TestNFAToDFA(t *testing.T) {
 		}
 
 		// --------- DFA ACCEPTANCE ----------
-		dfaOutcome, err := DFARun(dfa, runes)
+		dfaOutcome, _, err := DFARun(dfa, runes)
 		dfaAccepts := (err == nil && dfaOutcome)
 
 		// --------- ASSERT EQUIVALENCE ----------
@@ -204,7 +204,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		// --------- DFA ACCEPTANCE ----------
 		// DFARun returns an error on an invalid symbol,
 		// which correctly results in 'dfaAccepts = false'.
-		dfaOutcome, err := DFARun(dfa, runes)
+		dfaOutcome, _, err := DFARun(dfa, runes)
 		dfaAccepts := (err == nil && dfaOutcome)
 
 		// --------- ASSERT EQUIVALENCE ----------

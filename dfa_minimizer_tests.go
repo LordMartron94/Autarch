@@ -82,11 +82,14 @@ func TestDFAMinimize(t *testing.T) {
 	minTempMem := uint64(1 * memcore.KiloByte)
 	maxTempMem := uint64(1 * memcore.GigaByte)
 
-	minimizedDFA := DFAMinimize[rune, bool](
+	minimizedDFA := DFAMinimize(
 		originalDFA,
 		dfaAllocationFn, // Allocator for the *new* minimal DFA
 		memcore.MemoryUnitBytes(minTempMem),
 		memcore.MemoryUnitBytes(maxTempMem),
+		func(outcome bool) bool {
+			return outcome
+		},
 	)
 
 	// ───────────────────────────────────────────────────────────────
@@ -142,13 +145,13 @@ func TestDFAMinimize(t *testing.T) {
 	// ───────────────────────────────────────────────────────────────
 	for _, test := range tests {
 		// --- Run on Original DFA ---
-		outcomeOrig, errOrig := DFARun(originalDFA, []rune(test.input))
+		outcomeOrig, _, errOrig := DFARun(originalDFA, []rune(test.input))
 		if errOrig != nil {
 			outcomeOrig = false // Treat errors as non-accepting
 		}
 
 		// --- Run on Minimized DFA ---
-		outcomeMin, errMin := DFARun(minimizedDFA, []rune(test.input))
+		outcomeMin, _, errMin := DFARun(minimizedDFA, []rune(test.input))
 		if errMin != nil {
 			outcomeMin = false // Treat errors as non-accepting
 		}

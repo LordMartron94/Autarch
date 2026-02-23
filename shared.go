@@ -391,7 +391,7 @@ Edge cases:
 Only accepting states are expected to carry semantic outcomes. Non-accepting states
 should contain the zero value of TStateOutcome.
 */
-type OutcomeResolutionFn[TStateOutcome comparable] func(
+type OutcomeResolutionFn[TStateOutcome any] func(
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool)
@@ -416,7 +416,7 @@ Edge cases:
 - Returns ok=false if no accepting states exist
 - Returns ok=false if states list is empty
 */
-func OutcomeResolutionFirst[TStateOutcome comparable](
+func OutcomeResolutionFirst[TStateOutcome any](
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {
@@ -426,13 +426,10 @@ func OutcomeResolutionFirst[TStateOutcome comparable](
 	for i, s := range states {
 		o := outcomes[i]
 
-		var zero TStateOutcome
-		if o != zero {
-			if s < bestStateID {
-				bestStateID = s
-				outcome = o
-				ok = true
-			}
+		if s < bestStateID {
+			bestStateID = s
+			outcome = o
+			ok = true
 		}
 	}
 
@@ -458,19 +455,16 @@ Edge cases:
 - Returns ok=false if no accepting states exist
 - Returns ok=false if states list is empty
 */
-func OutcomeResolutionLast[TStateOutcome comparable](
+func OutcomeResolutionLast[TStateOutcome any](
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {
 
-	var zero TStateOutcome
 	bestStateID := uint64(0)
 
 	for i, s := range states {
 		o := outcomes[i]
-		if o == zero {
-			continue
-		}
+
 		if !ok || s > bestStateID {
 			bestStateID = s
 			outcome = o

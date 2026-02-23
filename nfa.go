@@ -37,7 +37,7 @@ Edge cases:
 - Invalid symbols return errors during execution
 - Dead states (no transitions) terminate processing early
 */
-type NFA[TObservation any, TStateOutcome comparable] struct {
+type NFA[TObservation, TStateOutcome any] struct {
 	accepting memcore.MarkRaw
 	outcomes  memcore.MarkRaw
 
@@ -79,7 +79,7 @@ Edge cases:
 - Empty startingStates creates an automaton that accepts nothing
 - Duplicate transitions are preserved (non-deterministic behavior)
 */
-func NFACreate[TObservation any, TStateOutcome comparable](
+func NFACreate[TObservation, TStateOutcome any](
 	allocFn memarch.AllocationFn,
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
@@ -160,7 +160,7 @@ Edge cases:
 - Handles empty alphabets and state sets gracefully
 - Invalid symbol IDs are marked in output
 */
-func NFADebugPrint[TObservation any, TStateOutcome comparable](
+func NFADebugPrint[TObservation, TStateOutcome any](
 	nfa *NFA[TObservation, TStateOutcome],
 ) {
 
@@ -290,7 +290,7 @@ Space complexity: O(1)
 Prerequisites:
 - nfa must be a valid NFA instance
 */
-func NFAIndexerGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
+func NFAIndexerGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
 	return nfa.indexer
 }
 
@@ -314,11 +314,11 @@ Prerequisites:
 Edge cases:
 - Returns raw memory handle - use memstruct.ArrayItemGetAtUnsafe to access
 */
-func NFAOutcomesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+func NFAOutcomesGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return nfa.outcomes
 }
 
-func NFAAcceptingGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
+func NFAAcceptingGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return nfa.accepting
 }
 
@@ -344,7 +344,7 @@ Edge cases:
 - Empty slice indicates no valid starting states
 - Multiple starting states enable parallel exploration
 */
-func NFAStartingStatesGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []uint64 {
+func NFAStartingStatesGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) []uint64 {
 	return nfa.startingStates
 }
 
@@ -369,7 +369,7 @@ Edge cases:
 - Empty alphabet means no valid input symbols
 - Alphabet order determines symbol ID assignment
 */
-func NFAAlphabetGet[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
+func NFAAlphabetGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) []SymbolDefinition[TObservation] {
 	return nfa.alphabet
 }
 
@@ -397,7 +397,7 @@ Edge cases:
 - Returns error if invalid symbol encountered
 - Empty input returns outcomes from starting states' epsilon closure
 */
-func NFARun[TObservation any, TStateOutcome comparable](nfa *NFA[TObservation, TStateOutcome], input []TObservation) ([]TStateOutcome, error) {
+func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome], input []TObservation) ([]TStateOutcome, error) {
 	current := epsilonClosure(nfa, nfa.startingStates)
 
 	for _, observation := range input {
@@ -463,7 +463,7 @@ Edge cases:
 - States with no epsilon transitions return themselves
 - Handles cycles in epsilon transitions correctly
 */
-func NFAEpsilonClosureCompute[TSymbol any, TStateOutcome comparable](
+func NFAEpsilonClosureCompute[TSymbol, TStateOutcome any](
 	nfa *NFA[TSymbol, TStateOutcome],
 	states []uint64,
 ) []uint64 {
@@ -495,7 +495,7 @@ Edge cases:
 - Returns error if observation is not in alphabet
 - Deduplicates resulting states automatically
 */
-func NFATransitionsForStates[TObservation any, TStateOutcome comparable](
+func NFATransitionsForStates[TObservation, TStateOutcome any](
 	nfa *NFA[TObservation, TStateOutcome],
 	states []uint64,
 	observation TObservation,
@@ -540,7 +540,7 @@ func mapKeys(m map[uint64]struct{}) []uint64 {
 	return out
 }
 
-func epsilonClosure[TObservation any, TStateOutcome comparable](
+func epsilonClosure[TObservation, TStateOutcome any](
 	nfa *NFA[TObservation, TStateOutcome],
 	states []uint64,
 ) []uint64 {

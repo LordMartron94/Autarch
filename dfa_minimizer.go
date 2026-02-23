@@ -7,10 +7,11 @@ import (
 	"memstruct"
 )
 
-func DFAMinimize[TObservation any, TStateOutcome comparable](
+func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 	dfa *DFA[TObservation, TStateOutcome],
 	dfaAllocationFn memarch.AllocationFn,
 	minTemp, maxTemp memcore.MemoryUnitBytes,
+	outcomeKeyFn func(out TStateOutcome) TKey,
 ) *DFA[TObservation, TStateOutcome] {
 
 	allocator := createTempAllocator(minTemp, maxTemp)
@@ -41,7 +42,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 
 	// 2. Initial partition P: non-accepting vs accepting (by outcome)
 	nonAccepting := *dfaStateSubsetCreate(numStates, nil)
-	acceptGroups := make(map[TStateOutcome]*dfaStateSubset)
+	acceptGroups := make(map[TKey]*dfaStateSubset)
 
 	accCur := memstruct.ArrayCursorCreate[bool](accArray)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](outArray)
@@ -49,13 +50,17 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	for s := uint64(0); s < numStates; s++ {
 		if !*accCur.PtrAt(s) {
 			nonAccepting.Add(s)
-		} else {
-			out := *outCur.PtrAt(s)
-			if _, ok := acceptGroups[out]; !ok {
-				acceptGroups[out] = dfaStateSubsetCreate(numStates, nil)
-			}
-			acceptGroups[out].Add(s)
+			continue
 		}
+
+		key := outcomeKeyFn(*outCur.PtrAt(s))
+
+		bs, ok := acceptGroups[key]
+		if !ok {
+			bs = dfaStateSubsetCreate(numStates, nil)
+			acceptGroups[key] = bs
+		}
+		bs.Add(s)
 	}
 
 	P := make([]dfaStateSubset, 0, 1+len(acceptGroups))
@@ -135,7 +140,7 @@ func DFAMinimize[TObservation any, TStateOutcome comparable](
 	return buildMinimizedDFA[TObservation, TStateOutcome](dfa, dfaAllocationFn, P, alphabet, indexer, accCur, outCur)
 }
 
-func buildMinimizedDFA[TO any, TR comparable](
+func buildMinimizedDFA[TO any, TR any](
 	oldDFA *DFA[TO, TR],
 	alloc memarch.AllocationFn,
 	P []dfaStateSubset,

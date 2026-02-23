@@ -13,7 +13,7 @@ import (
 // SUBSET REGISTRY
 // ---------------------------------------------------------------------
 
-type subsetRegistry[TSymbol any, TStateOutcome comparable] struct {
+type subsetRegistry[TSymbol, TStateOutcome any] struct {
 	// Key: raw bytes of subset bitset words.
 	// Value: DFA state id.
 	mapping map[string]uint64
@@ -24,7 +24,7 @@ type subsetRegistry[TSymbol any, TStateOutcome comparable] struct {
 	nfaStateCount uint64
 }
 
-func newSubsetRegistry[TS any, TO comparable](nfaCount uint64) *subsetRegistry[TS, TO] {
+func newSubsetRegistry[TS, TO any](nfaCount uint64) *subsetRegistry[TS, TO] {
 	return &subsetRegistry[TS, TO]{
 		mapping:       make(map[string]uint64),
 		subsets:       make([]dfaStateSubset, 0),
@@ -101,7 +101,7 @@ func (c *moveContext) reset() {
 // CORE CONVERTER
 // ---------------------------------------------------------------------
 
-func NFAToDFA[TSymbol any, TStateOutcome comparable](
+func NFAToDFA[TSymbol, TStateOutcome any](
 	nfa *NFA[TSymbol, TStateOutcome],
 	minMem, maxMem memcore.MemoryUnitBytes,
 	dfaAlloc memarch.AllocationFn,
@@ -207,7 +207,7 @@ func NFAToDFA[TSymbol any, TStateOutcome comparable](
 // HELPERS
 // ---------------------------------------------------------------------
 
-func computeMove[TS any, TO comparable](
+func computeMove[TS, TO any](
 	nfa *NFA[TS, TO],
 	sub *dfaStateSubset,
 	symID uint64,
@@ -230,7 +230,7 @@ func computeMove[TS any, TO comparable](
 	}
 }
 
-func resolveDFAOutcome[TS any, TO comparable](
+func resolveDFAOutcome[TS, TO any](
 	sub dfaStateSubset,
 	nfa *NFA[TS, TO],
 	resFn OutcomeResolutionFn[TO],
