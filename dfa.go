@@ -628,7 +628,37 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	var sb strings.Builder
 
 	// ============================================================
-	// 1. Alphabet
+	// 1. Pre-calculation for Layout
+	// ============================================================
+	// Calculate max widths for columns to ensure the table is readable
+	maxStateWidth := 5 // Minimum "State" header
+	stateStrings := make([]string, dfa.numStates)
+	for s := uint64(0); s < dfa.numStates; s++ {
+		if formatter != nil && formatter.FormatStateID != nil {
+			stateStrings[s] = formatter.FormatStateID(s)
+		} else {
+			stateStrings[s] = fmt.Sprintf("%d", s)
+		}
+		if len(stateStrings[s]) > maxStateWidth {
+			maxStateWidth = len(stateStrings[s])
+		}
+	}
+
+	symbolStrings := make([]string, dfa.alphabetSize)
+	maxSymbolWidth := 3
+	for id := uint64(0); id < dfa.alphabetSize; id++ {
+		if formatter != nil && formatter.FormatSymbolID != nil {
+			symbolStrings[id] = formatter.FormatSymbolID(id)
+		} else {
+			symbolStrings[id] = fmt.Sprintf("%d", id)
+		}
+		if len(symbolStrings[id]) > maxSymbolWidth {
+			maxSymbolWidth = len(symbolStrings[id])
+		}
+	}
+
+	// ============================================================
+	// 2. Header & Alphabet
 	// ============================================================
 	sb.WriteString("DFA Debug Print\n")
 	sb.WriteString("=============================\n\n")
@@ -641,97 +671,74 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 		} else {
 			symbolName = symDef.Name
 		}
-		sb.WriteString(fmt.Sprintf("  %2d → %s\n", id, symbolName))
+		sb.WriteString(fmt.Sprintf("  %s → %s\n", symbolStrings[id], symbolName))
 	}
 	sb.WriteString("\n")
 
 	// ============================================================
-	// 2. States (accepting + outcomes)
+	// 3. States (Status + Outcome)
 	// ============================================================
 	sb.WriteString("States:\n")
-
 	acceptCur := memstruct.ArrayCursorCreate[bool](dfa.accepting)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 
 	for s := uint64(0); s < dfa.numStates; s++ {
-
 		isAccepting := *acceptCur.PtrAt(s)
+		isDead := dfa.deadStates[s]
+		outcome := *outCur.PtrAt(s)
 
-		var stateLabel string
+		var outcomeStr string
+		if formatter != nil && formatter.FormatStateOutcome != nil {
+			outcomeStr = formatter.FormatStateOutcome(outcome)
+		} else {
+			outcomeStr = fmt.Sprintf("%v", outcome)
+		}
 
+		status := " "
 		if isAccepting {
-			outcome := *outCur.PtrAt(s)
-			if formatter != nil && formatter.FormatStateOutcome != nil {
-				stateLabel = formatter.FormatStateOutcome(outcome)
-			} else {
-				stateLabel = fmt.Sprintf("%v", outcome)
-			}
-		} else {
-			stateLabel = "—" // non-accepting state
+			status = "A" // Accepting
+		} else if isDead {
+			status = "D" // Dead
 		}
 
-		var stateIDStr string
-		if formatter != nil && formatter.FormatStateID != nil {
-			stateIDStr = formatter.FormatStateID(s)
-		} else {
-			stateIDStr = fmt.Sprintf("%2d", s)
-		}
-
-		sb.WriteString(fmt.Sprintf("  state %s → %s\n", stateIDStr, stateLabel))
-	}
-
-	sb.WriteString("\n")
-
-	// ============================================================
-	// 3. Transition Table
-	// ============================================================
-	sb.WriteString("Transitions (rows = states, columns = symbols):\n")
-
-	sb.WriteString("        |")
-	for id := uint64(0); id < dfa.alphabetSize; id++ {
-		var symbolIDStr string
-		if formatter != nil && formatter.FormatSymbolID != nil {
-			symbolIDStr = formatter.FormatSymbolID(id)
-		} else {
-			symbolIDStr = fmt.Sprintf("%3d", id)
-		}
-		sb.WriteString(fmt.Sprintf(" %3s ", symbolIDStr))
+		sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", status, maxStateWidth, stateStrings[s], outcomeStr))
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString("--------+")
+	// ============================================================
+	// 4. Transition Table
+	// ============================================================
+	sb.WriteString("Transitions (A=Accepting, D=Dead):\n")
+
+	// Header Row
+	sb.WriteString(strings.Repeat(" ", maxStateWidth+4) + "|")
 	for id := uint64(0); id < dfa.alphabetSize; id++ {
-		sb.WriteString("-----")
+		sb.WriteString(fmt.Sprintf(" %*s ", maxSymbolWidth, symbolStrings[id]))
+	}
+	sb.WriteString("\n")
+
+	// Separator
+	sb.WriteString(strings.Repeat("-", maxStateWidth+4) + "+")
+	for id := uint64(0); id < dfa.alphabetSize; id++ {
+		sb.WriteString(strings.Repeat("-", maxSymbolWidth+2))
 	}
 	sb.WriteString("\n")
 
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
-
 	for s := uint64(0); s < dfa.numStates; s++ {
-
-		var stateIDStr string
-		if formatter != nil && formatter.FormatStateID != nil {
-			stateIDStr = formatter.FormatStateID(s)
-		} else {
-			stateIDStr = fmt.Sprintf("%3d", s)
+		isAccepting := *acceptCur.PtrAt(s)
+		status := " "
+		if isAccepting {
+			status = "A"
 		}
 
-		sb.WriteString(fmt.Sprintf("  %3s  |", stateIDStr))
+		sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
 
-		row := s * dfa.alphabetSize
-		for symbol := uint64(0); symbol < dfa.alphabetSize; symbol++ {
-			target := *transCur.PtrAt(row + symbol)
-
-			var targetStr string
-			if formatter != nil && formatter.FormatStateID != nil {
-				targetStr = formatter.FormatStateID(target)
-			} else {
-				targetStr = fmt.Sprintf("%3d", target)
-			}
-
-			sb.WriteString(fmt.Sprintf(" %3s ", targetStr))
+		rowStart := s * dfa.alphabetSize
+		for symID := uint64(0); symID < dfa.alphabetSize; symID++ {
+			target := *transCur.PtrAt(rowStart + symID)
+			sb.WriteString(fmt.Sprintf(" %*s ", maxSymbolWidth, stateStrings[target]))
 		}
-
 		sb.WriteString("\n")
 	}
 
