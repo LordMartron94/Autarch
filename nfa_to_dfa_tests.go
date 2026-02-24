@@ -45,7 +45,6 @@ func TestNFAToDFA(t *testing.T) {
 		nil, // No epsilon edges
 		[]uint64{0},
 		[]bool{false, true},
-		[]bool{false, true},
 		indexer,
 	)
 
@@ -87,7 +86,7 @@ func TestNFAToDFA(t *testing.T) {
 		}
 
 		// --------- DFA ACCEPTANCE ----------
-		dfaOutcome, _, err := DFARun(dfa, runes)
+		dfaOutcome, err := DFARun(dfa, runes)
 		dfaAccepts := (err == nil && dfaOutcome)
 
 		// --------- ASSERT EQUIVALENCE ----------
@@ -123,8 +122,6 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 	}
 	indexer := SymbolIndexerBuild(alphabet)
 
-	// NFA for: a*b* (any number of 'a's followed by any number of 'b's)
-	// This NFA uses an epsilon transition.
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
@@ -140,8 +137,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 			0: {1}, // Epsilon transition allows moving from 'a's to 'b's
 		},
 		[]uint64{0},
-		[]bool{true, true}, // State 0 (for a*) and State 1 (for b*) are accepting
-		[]bool{true, true},
+		[]bool{true, true}, // State 0 (for a*) and State 1 (for b*) outcomes
 		indexer,
 	)
 
@@ -204,7 +200,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		// --------- DFA ACCEPTANCE ----------
 		// DFARun returns an error on an invalid symbol,
 		// which correctly results in 'dfaAccepts = false'.
-		dfaOutcome, _, err := DFARun(dfa, runes)
+		dfaOutcome, err := DFARun(dfa, runes)
 		dfaAccepts := (err == nil && dfaOutcome)
 
 		// --------- ASSERT EQUIVALENCE ----------

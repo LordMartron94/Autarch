@@ -375,23 +375,13 @@ responsible for determining which semantic identity the resulting DFA state shou
 represent based on the identities of its constituent NFA states.
 
 Parameters:
-- isAccepting: True if the subset contains at least one NFA state marked as terminal.
-- states: Parallel slice of all NFA state IDs present in the current subset.
+- states: Slice of all NFA state IDs present in the current subset.
 - outcomes: Parallel slice of all outcomes associated with the NFA states.
 
-Decoupling Logic:
-Unlike traditional Lexer-only resolution, this function receives outcomes for
-ALL states in the subset, not just terminal ones. This allows the DFA to behave
-as a Moore Machine, tracking "situational awareness" (e.g., current grammar rule)
-even in non-accepting intermediate states.
-
-Usage for Parsers:
- 1. Priority: If multiple annotations exist, the function should return the
-    most specific annotation (e.g., inner-most grammar rule).
- 2. Hierarchy: The 'ok' return value indicates if a meaningful identity was
-    found. If 'ok' is false, the DFA state outcome is zero-initialized.
- 3. Termination: 'isAccepting' should be used to distinguish between
-    "valid syntax completion" and "mid-rule progress."
+Acceptance is a client-only semantic: the resolver receives outcomes for all states
+in the subset. The client assigns outcomes when building the NFA (e.g. a non-terminal
+outcome for non-terminal states) and uses this function to pick the DFA state outcome
+(e.g. first/last by state ID, or filter by sentinel).
 
 Performance:
   - Time complexity: O(n) where n is the number of states in the subset.
@@ -399,7 +389,6 @@ Performance:
     allocating new collections within this function.
 */
 type OutcomeResolutionFn[TStateOutcome any] func(
-	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool)
@@ -407,21 +396,16 @@ type OutcomeResolutionFn[TStateOutcome any] func(
 /*
 OutcomeResolutionFirst selects the outcome from the NFA state with the lowest ID.
 
-In a priority-based system, this corresponds to "earliest rule wins." This
-version is "Aware," meaning it receives the mathematical acceptance status
-of the subset but prioritizes finding the most relevant semantic outcome
-from all states present.
+In a priority-based system, this corresponds to "earliest rule wins."
 
 Use cases:
 - Priority-based grammar recognition (first declared rule takes precedence)
-- Preserving situational context in non-terminal DFA states
 - Deterministic path resolution in Moore-style machines
 
 Time complexity: O(n) where n is number of states
 Space complexity: O(1)
 */
 func OutcomeResolutionFirst[TStateOutcome any](
-	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {
@@ -455,7 +439,6 @@ Time complexity: O(n) where n is number of states
 Space complexity: O(1)
 */
 func OutcomeResolutionLast[TStateOutcome any](
-	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {

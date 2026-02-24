@@ -38,7 +38,6 @@ Edge cases:
 - Empty input returns outcome from state 0
 */
 type DFA[TObservation, TStateOutcome any] struct {
-	accepting   memcore.MarkRaw // Array[bool]
 	outcomes    memcore.MarkRaw // Array[TStateOutcome]
 	transitions memcore.MarkRaw // Array[uint64]
 
@@ -73,10 +72,6 @@ Edge cases:
 */
 func DFAOutcomesGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return dfa.outcomes
-}
-
-func DFAAcceptingGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
-	return dfa.accepting
 }
 
 /*
@@ -193,14 +188,9 @@ func DFACreate[TObservation, TStateOutcome any](
 	allocFn memarch.AllocationFn,
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
-	accepting []bool,
 	outcomes []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
 ) *DFA[TObservation, TStateOutcome] {
-	if len(accepting) != len(outcomes) {
-		panic("DFACreate: accepting and outcomes slices must be same length")
-	}
-
 	validateAlphabet(alphabet, "dfa")
 
 	alphabetSize := uint64(len(alphabet))
@@ -221,13 +211,11 @@ func DFACreate[TObservation, TStateOutcome any](
 	}
 
 	// ───────────────────────────────────────────────────────────────
-	// Allocate state metadata
+	// Allocate state metadata (outcomes only; acceptance is client-defined via outcome)
 	// ───────────────────────────────────────────────────────────────
-	acceptTable, _ := memarch.MemArchArrayCreate[bool](allocFn, numStates)
 	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
 
 	for i := uint64(0); i < numStates; i++ {
-		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
 		memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
 	}
 
@@ -298,15 +286,11 @@ func DFACreate[TObservation, TStateOutcome any](
 	transCur := memstruct.ArrayCursorCreate[uint64](transitionArray)
 
 	for s := uint64(0); s < numStates; s++ {
-		if memstruct.ArrayItemGetAtUnsafe[bool](acceptTable, s) {
-			continue
-		}
-
 		row := s * alphabetSize
 		isDead := true
 
 		for a := uint64(0); a < alphabetSize; a++ {
-			if *transCur.PtrAt(row + a) != s {
+			if *transCur.PtrAt(row+a) != s {
 				isDead = false
 				break
 			}
@@ -319,7 +303,6 @@ func DFACreate[TObservation, TStateOutcome any](
 	// ───────────────────────────────────────────────────────────────
 	return &DFA[TObservation, TStateOutcome]{
 		outcomes:     outcomeTable,
-		accepting:    acceptTable,
 		transitions:  transitionArray,
 		indexer:      indexer,
 		numStates:    numStates,
@@ -377,18 +360,13 @@ Prerequisites:
 - input must contain only symbols from the alphabet
 
 Edge cases:
-- Returns zero value if DFA ends in a non-accepting (including dead) state.
-- Returns error if invalid symbol encountered
+- Returns zero value if invalid symbol encountered
 - Empty input returns outcome from state 0
 */
 func DFARun[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	input []TObservation,
-) (
-	outcome TStateOutcome,
-	accepting bool,
-	err error,
-) {
+) (outcome TStateOutcome, err error) {
 	state := uint64(0)
 	arrayCursor := memstruct.ArrayCursorCreate[uint64](dfa.transitions) // cursor to avoid dereffing the array header each time
 
@@ -396,7 +374,7 @@ func DFARun[TObservation, TStateOutcome any](
 		symbols := dfa.indexer(observation)
 		if len(symbols) == 0 {
 			var zero TStateOutcome
-			return zero, false, fmt.Errorf("invalid symbol: %v", observation)
+			return zero, fmt.Errorf("invalid symbol: %v", observation)
 		}
 
 		if len(symbols) != 1 {
@@ -415,9 +393,8 @@ func DFARun[TObservation, TStateOutcome any](
 		state = *newState
 	}
 
-	out, ok := DFAStateOutcome(dfa, state)
-	return out, ok, nil
-
+	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
+	return outcome, nil
 }
 
 /*
@@ -446,7 +423,7 @@ Prerequisites:
 
 Edge cases:
 - Returns empty slice if state is a dead-end (no valid transitions)
-- Includes all symbols that lead to any state (accepting or not)
+- Includes all symbols that lead to any state
 - Does not allocate excessively (capacity bounded by alphabet size)
 
 Design notes:
@@ -673,14 +650,12 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	sb.WriteString("\n")
 
 	// ============================================================
-	// 3. States (Status + Outcome)
+	// 3. States (Outcome)
 	// ============================================================
 	sb.WriteString("States:\n")
-	acceptCur := memstruct.ArrayCursorCreate[bool](dfa.accepting)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 
 	for s := uint64(0); s < dfa.numStates; s++ {
-		isAccepting := *acceptCur.PtrAt(s)
 		isDead := dfa.deadStates[s]
 		outcome := *outCur.PtrAt(s)
 
@@ -692,9 +667,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 		}
 
 		status := " "
-		if isAccepting {
-			status = "A" // Accepting
-		} else if isDead {
+		if isDead {
 			status = "D" // Dead
 		}
 
@@ -705,7 +678,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	// ============================================================
 	// 4. Transition Table
 	// ============================================================
-	sb.WriteString("Transitions (A=Accepting, D=Dead):\n")
+	sb.WriteString("Transitions (D=Dead):\n")
 
 	// Header Row
 	sb.WriteString(strings.Repeat(" ", maxStateWidth+4) + "|")
@@ -723,10 +696,10 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	for s := uint64(0); s < dfa.numStates; s++ {
-		isAccepting := *acceptCur.PtrAt(s)
+		isDead := dfa.deadStates[s]
 		status := " "
-		if isAccepting {
-			status = "A"
+		if isDead {
+			status = "D"
 		}
 
 		sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
@@ -865,15 +838,15 @@ func DFAStep[TObservation, TStateOutcome any](
 }
 
 /*
-DFAStateOutcome retrieves the semantic outcome associated with an accepting DFA state.
+DFAStateOutcome retrieves the semantic outcome for a DFA state.
 
-The outcome typically represents a token type, rule result, or other semantic
-information produced when the automaton reaches an accepting configuration.
+Every state has an outcome assigned at construction. The client defines
+acceptance by interpreting the outcome (e.g. comparing to a sentinel).
 
 Use cases:
 - Retrieving token types in lexers
 - Obtaining match results from automata
-- Applying semantic actions on acceptance
+- Client-defined acceptance (e.g. outcome != rejectSentinel)
 
 Time complexity: O(1)
 Space complexity: O(1)
@@ -883,25 +856,20 @@ Prerequisites:
 - state must be a valid state index
 
 Edge cases:
-- Returns ok=false for non-accepting states
-- Behavior is undefined for invalid state indices
-- Outcomes are assigned explicitly during DFA construction
-
-Design notes:
-- Acceptance is tracked separately from outcomes (no sentinel values)
-- Zero values of TStateOutcome have no semantic meaning
-- This matches formal DFA theory: acceptance is a state property, not a value hack
+- Panics if state is out of range
 */
 func DFAStateOutcome[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) (outcome TStateOutcome, ok bool) {
-	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
-
-	if !memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state) {
-		return outcome, false
+	if state >= dfa.numStates {
+		panic(fmt.Errorf(
+			"DFAStateOutcome: invalid state %d (max=%d)",
+			state,
+			dfa.numStates-1,
+		))
 	}
-
+	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
 	return outcome, true
 }
 
@@ -932,40 +900,4 @@ func DFAStates[TObservation, TStateOutcome any, TAs foundation.Integer](
 	}
 
 	return states
-}
-
-/*
-DFAIsAccepting checks whether the given DFA state is accepting.
-
-This performs a direct O(1) lookup in the acceptance table.
-
-Use cases:
-- Fast acceptance checks during execution
-- DFA analysis and visualization
-- Minimization algorithms
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- dfa must be valid
-- state must be < dfa.numStates
-
-Panics:
-- If state is out of range
-*/
-func DFAIsAccepting[TObservation, TStateOutcome any](
-	dfa *DFA[TObservation, TStateOutcome],
-	state uint64,
-) bool {
-
-	if state >= dfa.numStates {
-		panic(fmt.Errorf(
-			"DFAIsAccepting: invalid state %d (max=%d)",
-			state,
-			dfa.numStates-1,
-		))
-	}
-
-	return memstruct.ArrayItemGetAtUnsafe[bool](dfa.accepting, state)
 }

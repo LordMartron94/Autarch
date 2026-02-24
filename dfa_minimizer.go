@@ -17,9 +17,8 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 	allocator := createTempAllocator(minTemp, maxTemp)
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
-	accArray := DFAAcceptingGet(dfa)
 	outArray := DFAOutcomesGet(dfa)
-	numStates := memstruct.ArrayCapacityGet[bool](accArray)
+	numStates := memstruct.ArrayCapacityGet[TStateOutcome](outArray)
 	if numStates == 0 {
 		return dfa // Nothing to minimize
 	}
@@ -40,34 +39,23 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 		}
 	}
 
-	// 2. Initial partition P: non-accepting vs accepting (by outcome)
-	nonAccepting := *dfaStateSubsetCreate(numStates, nil)
-	acceptGroups := make(map[TKey]*dfaStateSubset)
-
-	accCur := memstruct.ArrayCursorCreate[bool](accArray)
+	// 2. Initial partition P: by outcome key (every state has an outcome)
+	outcomeGroups := make(map[TKey]*dfaStateSubset)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](outArray)
 
 	for s := uint64(0); s < numStates; s++ {
-		if !*accCur.PtrAt(s) {
-			nonAccepting.Add(s)
-			continue
-		}
-
 		key := outcomeKeyFn(*outCur.PtrAt(s))
 
-		bs, ok := acceptGroups[key]
+		bs, ok := outcomeGroups[key]
 		if !ok {
 			bs = dfaStateSubsetCreate(numStates, nil)
-			acceptGroups[key] = bs
+			outcomeGroups[key] = bs
 		}
 		bs.Add(s)
 	}
 
-	P := make([]dfaStateSubset, 0, 1+len(acceptGroups))
-	if nonAccepting.Count() > 0 {
-		P = append(P, nonAccepting)
-	}
-	for _, bs := range acceptGroups {
+	P := make([]dfaStateSubset, 0, len(outcomeGroups))
+	for _, bs := range outcomeGroups {
 		P = append(P, *bs)
 	}
 
@@ -137,7 +125,7 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 		}
 	}
 
-	return buildMinimizedDFA[TObservation, TStateOutcome](dfa, dfaAllocationFn, P, alphabet, indexer, accCur, outCur)
+	return buildMinimizedDFA[TObservation, TStateOutcome](dfa, dfaAllocationFn, P, alphabet, indexer, outCur)
 }
 
 func buildMinimizedDFA[TO any, TR any](
@@ -146,7 +134,6 @@ func buildMinimizedDFA[TO any, TR any](
 	P []dfaStateSubset,
 	alphabet []SymbolDefinition[TO],
 	indexer SymbolIndexer[TO],
-	accCur memstruct.ArrayCursor[bool],
 	outCur memstruct.ArrayCursor[TR],
 ) *DFA[TO, TR] {
 	// Canonicalize: Start state (0) must be Block 0
@@ -157,7 +144,7 @@ func buildMinimizedDFA[TO any, TR any](
 		}
 	}
 
-	numStates := memstruct.ArrayCapacityGet[bool](DFAAcceptingGet(oldDFA))
+	numStates := memstruct.ArrayCapacityGet[TR](oldDFA.outcomes)
 	stateToBlock := make([]uint64, numStates)
 	for bid, B := range P {
 		for _, s := range B.States() {
@@ -166,13 +153,11 @@ func buildMinimizedDFA[TO any, TR any](
 	}
 
 	blockCount := uint64(len(P))
-	minAccepting := make([]bool, blockCount)
 	minOutcomes := make([]TR, blockCount)
 	minTransitions := make([]Transition[TO], 0, blockCount*uint64(len(alphabet)))
 
 	for bid, B := range P {
 		rep := B.States()[0]
-		minAccepting[bid] = *accCur.PtrAt(rep)
 		minOutcomes[bid] = *outCur.PtrAt(rep)
 
 		for symID := uint64(0); symID < uint64(len(alphabet)); symID++ {
@@ -187,5 +172,5 @@ func buildMinimizedDFA[TO any, TR any](
 		}
 	}
 
-	return DFACreate(alloc, alphabet, minTransitions, minAccepting, minOutcomes, indexer)
+	return DFACreate(alloc, alphabet, minTransitions, minOutcomes, indexer)
 }

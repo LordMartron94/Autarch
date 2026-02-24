@@ -91,8 +91,8 @@ transitions := []autarch.Transition[rune]{
     },
 }
 
-// State outcomes: state 2 is accepting
-states := []bool{false, false, true}
+// State outcomes: one per state (e.g. true = match at state 2)
+outcomes := []bool{false, false, true}
 
 // Create NFA
 nfa := autarch.NFACreate(
@@ -101,14 +101,14 @@ nfa := autarch.NFACreate(
     transitions,
     nil, // epsilon edges (none in this example)
     []uint64{0}, // starting states
-    states,
+    outcomes,
     indexer,
 )
 
 // Process input
 input := []rune{'a', 'b'}
 outcomes, err := autarch.NFARun(nfa, input)
-// outcomes contains [true] if input matches
+// outcomes contains the outcome(s) from the final state set; client interprets which denote acceptance
 ```
 
 ### `DFA[TObservation, TStateOutcome]`
@@ -126,28 +126,27 @@ Deterministic Finite Automaton with exactly one transition per state-symbol pair
 **Example:**
 
 ```go
-// Convert NFA to DFA
+// Convert NFA to DFA (resolution function maps subset outcomes to DFA state outcome)
 dfa := autarch.NFAToDFA(
     nfa,
     1*memcore.Byte,      // min temp allocator size
     1*memcore.GigaByte,   // max temp allocator size
     allocFn,
-    false,               // invalid outcome
     nil,                 // resolution function (nil = default: OutcomeResolutionFirst)
 )
 
-// Minimize DFA
+// Minimize DFA (outcomeKeyFn partitions states by outcome for equivalence)
 minimized := autarch.DFAMinimize(
     dfa,
     allocFn,
     1*memcore.Byte,
     1*memcore.GigaByte,
-    false,
+    func(outcome bool) bool { return outcome },
 )
 
 // Process input efficiently
 outcome, err := autarch.DFARun(minimized, []rune{'a', 'b'})
-// outcome is true if input matches
+// outcome is the state outcome; client interprets it as accept/reject (e.g. outcome == true)
 ```
 
 ### Outcome Resolution
@@ -161,17 +160,19 @@ resolution function determines which outcome value to assign to the DFA state.
 
 **Custom Resolution:**
 
-You can provide a custom `OutcomeResolutionFn` to implement domain-specific outcome selection:
+You can provide a custom `OutcomeResolutionFn` to implement domain-specific outcome selection.
+Acceptance is a client-defined semantic: every state has an outcome; the resolver picks one for the DFA state from the subset's outcomes.
 
 ```go
-customResolution := func(states []uint64, outcomes []TokenType, invalidToken TokenType) TokenType {
-    // Custom logic to select from outcomes
-    // states and outcomes are parallel arrays
-    // Return selected outcome
-    return outcomes[0]
+customResolution := func(states []uint64, outcomes []TokenType) (TokenType, bool) {
+    // Custom logic to select from outcomes (e.g. first non-sentinel)
+    if len(outcomes) == 0 {
+        return invalidToken, false
+    }
+    return outcomes[0], true
 }
 
-dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, TokenInvalid, customResolution)
+dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, customResolution)
 ```
 
 ### Supporting Types
@@ -241,7 +242,7 @@ identifierPattern := pattern.Lower.Or(pattern.Upper).Then(
 nfa := pattern.RegulaCompileToNFA(
     allocFn,
     identifierPattern,
-    TokenIdentifier,  // accept outcome
+    TokenIdentifier,  // outcome for that state
     TokenInvalid,     // invalid outcome
 )
 
@@ -409,10 +410,10 @@ for _, obs := range input {
     // Single transition with cursor (no error checking for performance)
     currentState = autarch.DFATransition(dfa, obs, currentState, cursor)
     
-    // Check outcome
-    outcome := autarch.DFAStateOutcome(dfa, currentState)
+    // Check outcome (client interprets whether it denotes a match)
+    outcome, _ := autarch.DFAStateOutcome(dfa, currentState)
     if outcome != invalidOutcome {
-        // Accepting state reached
+        // State has a match outcome
     }
 }
 ```

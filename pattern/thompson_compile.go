@@ -43,11 +43,12 @@ The shared compilation context handles the full preparation pipeline internally.
 
 ---
 
-### Acceptance semantics
+### Outcome semantics
 
-  - Each compiled NFA has exactly one accepting state
-  - The accepting state carries the instruction’s Outcome
-  - No sentinel values or implicit acceptance markers are used
+  - Each compiled NFA has exactly one terminal state (the fragment’s accept state).
+  - The terminal state carries the instruction’s Outcome; all other states carry
+    the explicit nonTerminalOutcome. Acceptance is a client-defined semantic
+    (e.g. outcome != nonTerminalOutcome).
 
 ---
 
@@ -86,6 +87,7 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
+	nonTerminalOutcome TOutcome,
 ) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 	if len(instructions) == 0 {
 		return nil, fmt.Errorf("instructions list must be non-empty")
@@ -106,11 +108,13 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 
 		numStates := c.nextState
 		outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
-		accepting := make([]bool, numStates)
 
-		// 1. Process annotations captured in the map during recursion.
-		// Since multiple nodes might exit at the same state (especially with epsilon),
-		// we map them to the state-indexed slices.
+		// 1. Initialize every state to the explicit non-terminal outcome.
+		for state := uint64(0); state < numStates; state++ {
+			outcomes[state] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
+		}
+
+		// 2. Process annotations captured in the map during recursion.
 		for state, annID := range c.annotations {
 			outcomes[state] = AnnotatedOutcome[TOutcome]{
 				Value:      instruction.Outcome,
@@ -118,15 +122,9 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 			}
 		}
 
-		// 2. Final Accept State logic.
-		// Use the 'accepting' slice to check if we already set an outcome
-		// via a specific node annotation. If not, set the base pattern outcome.
-		if !accepting[frag.accept] {
-			accepting[frag.accept] = true
-			outcomes[frag.accept] = AnnotatedOutcome[TOutcome]{
-				Value: instruction.Outcome,
-				// Annotation is default 0
-			}
+		// 3. Terminal state: set the instruction outcome if not already set by annotation.
+		if _, hasAnn := c.annotations[frag.accept]; !hasAnn {
+			outcomes[frag.accept] = AnnotatedOutcome[TOutcome]{Value: instruction.Outcome}
 		}
 
 		out[i] = autarch.NFACreate(
@@ -135,7 +133,6 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 			c.transitions,
 			c.epsilonEdges,
 			[]uint64{frag.start},
-			accepting,
 			outcomes,
 			ctx.indexer,
 		)

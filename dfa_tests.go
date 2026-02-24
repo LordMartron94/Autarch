@@ -47,7 +47,6 @@ func TestDFA(t *testing.T) {
 			{CurrentState: 2, Symbol: symbolB, NextState: 0},
 		},
 		[]bool{false, false, true},
-		[]bool{false, false, true},
 		indexer,
 	)
 
@@ -98,7 +97,7 @@ func TestDFA(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		outcome, _, err := DFARun(dfa, []rune(test.input))
+		outcome, err := DFARun(dfa, []rune(test.input))
 		if err != nil {
 			outcome = false
 		}

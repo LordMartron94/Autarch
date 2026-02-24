@@ -47,7 +47,6 @@ func TestNFA(t *testing.T) {
 		nil, // No epsilon edges
 		[]uint64{0},
 		[]bool{false, true},
-		[]bool{false, true},
 		indexer,
 	)
 
@@ -137,8 +136,7 @@ func TestNFAEpsilon(t *testing.T) {
 			0: {1}, // Epsilon edge from state 0 to state 1
 		},
 		[]uint64{0},
-		[]bool{true, true}, // State 0 and State 1 are both accepting
-		[]bool{true, true},
+		[]bool{true, true}, // State 0 and State 1 outcomes (both "accept" in test)
 		indexer,
 	)
 

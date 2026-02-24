@@ -17,6 +17,7 @@ type RegulaToNFACompiler[TObs any, TOutcome comparable] func(
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
+	nonTerminalOutcome TOutcome,
 ) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error)
 
 /*

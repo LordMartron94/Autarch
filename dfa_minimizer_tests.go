@@ -68,9 +68,7 @@ func TestDFAMinimize(t *testing.T) {
 			{CurrentState: 5, Symbol: symbolA, NextState: 5},
 			{CurrentState: 5, Symbol: symbolB, NextState: 5},
 		},
-		// Accepting for 6 states: 0,1,2,3,4,5
-		[]bool{false, false, false, true, true, false},
-		// Outcomes for 6 states (only meaningful where accepting=true)
+		// Accepting for 6 states: 0,1,2,3,4,5 → outcomes only (true = match)
 		[]bool{false, false, false, true, true, false},
 		indexer,
 	)
@@ -145,13 +143,13 @@ func TestDFAMinimize(t *testing.T) {
 	// ───────────────────────────────────────────────────────────────
 	for _, test := range tests {
 		// --- Run on Original DFA ---
-		outcomeOrig, _, errOrig := DFARun(originalDFA, []rune(test.input))
+		outcomeOrig, errOrig := DFARun(originalDFA, []rune(test.input))
 		if errOrig != nil {
 			outcomeOrig = false // Treat errors as non-accepting
 		}
 
 		// --- Run on Minimized DFA ---
-		outcomeMin, _, errMin := DFARun(minimizedDFA, []rune(test.input))
+		outcomeMin, errMin := DFARun(minimizedDFA, []rune(test.input))
 		if errMin != nil {
 			outcomeMin = false // Treat errors as non-accepting
 		}

@@ -19,7 +19,6 @@ type subsetRegistry[TSymbol, TStateOutcome any] struct {
 	mapping map[string]uint64
 
 	subsets       []dfaStateSubset
-	accepting     []bool
 	outcomes      []TStateOutcome
 	nfaStateCount uint64
 }
@@ -28,7 +27,6 @@ func newSubsetRegistry[TS, TO any](nfaCount uint64) *subsetRegistry[TS, TO] {
 	return &subsetRegistry[TS, TO]{
 		mapping:       make(map[string]uint64),
 		subsets:       make([]dfaStateSubset, 0),
-		accepting:     make([]bool, 0),
 		outcomes:      make([]TO, 0),
 		nfaStateCount: nfaCount,
 	}
@@ -62,8 +60,7 @@ func (r *subsetRegistry[TS, TO]) register(
 	r.mapping[subsetKey(&sub)] = id
 	r.subsets = append(r.subsets, sub)
 
-	acc, out := resolveDFAOutcome(sub, nfa, resFn)
-	r.accepting = append(r.accepting, acc)
+	out := resolveDFAOutcome(sub, nfa, resFn)
 	r.outcomes = append(r.outcomes, out)
 
 	return id
@@ -114,7 +111,7 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 	allocHandle := createTempAllocator(minMem, maxMem)
 	defer memforge.DynamicLinearAllocatorDestroy(allocHandle)
 
-	nfaStateCount := memstruct.ArrayCapacityGet[bool](NFAAcceptingGet(nfa))
+	nfaStateCount := NFANumStates(nfa)
 	alphabet := NFAAlphabetGet(nfa)
 
 	registry := newSubsetRegistry[TSymbol, TStateOutcome](nfaStateCount)
@@ -197,7 +194,6 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 		dfaAlloc,
 		alphabet,
 		transitions,
-		registry.accepting,
 		registry.outcomes,
 		NFAIndexerGet(nfa),
 	)
@@ -234,40 +230,29 @@ func resolveDFAOutcome[TS, TO any](
 	sub dfaStateSubset,
 	nfa *NFA[TS, TO],
 	resFn OutcomeResolutionFn[TO],
-) (bool, TO) {
-	accArray := NFAAcceptingGet(nfa)
+) TO {
 	outArray := NFAOutcomesGet(nfa)
 
 	var allStates []uint64
 	var allOutcomes []TO
-	isAccepting := false
 
-	// Gather the full situational context of the subset
 	for _, s := range sub.States() {
-		// Mathematical Acceptance: Does this subset contain any terminal NFA states?
-		if memstruct.ArrayItemGetAtUnsafe[bool](accArray, s) {
-			isAccepting = true
-		}
-
-		// Semantic Identity: Collect outcomes from ALL states (accepting or not).
 		allStates = append(allStates, s)
 		allOutcomes = append(allOutcomes, memstruct.ArrayItemGetAtUnsafe[TO](outArray, s))
 	}
 
-	// Handle the empty/sink state case
 	if len(allStates) == 0 {
 		var zero TO
-		return false, zero
+		return zero
 	}
 
-	outcome, ok := resFn(isAccepting, allStates, allOutcomes)
-
+	outcome, ok := resFn(allStates, allOutcomes)
 	if !ok {
 		var zero TO
-		return isAccepting, zero
+		return zero
 	}
 
-	return isAccepting, outcome
+	return outcome
 }
 
 func createTempAllocator(minMem, maxMem memcore.MemoryUnitBytes) memcore.MarkRaw {

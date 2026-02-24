@@ -242,6 +242,7 @@ func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
 	instructions []RegulaNFAInstruction[TObs, TOutcome],
 	ctx *RegulaSharedCompilationContext[TObs],
+	nonTerminalOutcome TOutcome,
 ) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 
 	if len(instructions) == 0 {
@@ -276,7 +277,7 @@ func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 		info := computeGlushkovInfo(pat, follow, pm.maxPos)
 
 		// 4. Synthesis
-		out[i] = buildGlushkovNFA(alloc, ctx, pm, follow, info, outcome)
+		out[i] = buildGlushkovNFA(alloc, ctx, pm, follow, info, outcome, nonTerminalOutcome)
 	}
 
 	return out, nil
@@ -390,6 +391,7 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 	follow []positionSet,
 	info glushkovInfo,
 	baseOutcome TOutcome,
+	nonTerminalOutcome TOutcome,
 ) *autarch.NFA[TObs, AnnotatedOutcome[TOutcome]] {
 	numStates := uint64(pm.maxPos) + 1
 	transitions := make([]autarch.Transition[TObs], 0)
@@ -425,27 +427,34 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 		})
 	}
 
-	// 3. State Metadata Synthesis
-	accepting := make([]bool, numStates)
+	// 3. State Metadata: all states get nonTerminalOutcome; terminal states get baseOutcome
 	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
 
+	for p := uint64(0); p < numStates; p++ {
+		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
+	}
+
 	for p := positionID(1); p <= pm.maxPos; p++ {
-		var annPtr *AnnotationID // Default is nil
+		var annPtr *AnnotationID
 		if a, ok := pm.annByPos[p]; ok {
 			val := a
-			annPtr = &val // Only create a pointer if the annotation actually exists
+			annPtr = &val
 		}
-		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: baseOutcome, Annotation: annPtr}
+		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome, Annotation: annPtr}
 	}
 
 	if info.nullable {
-		accepting[0] = true
+		outcomes[0] = AnnotatedOutcome[TOutcome]{Value: baseOutcome}
 	}
-	outcomes[0] = AnnotatedOutcome[TOutcome]{Value: baseOutcome}
 
-	// 4. Mathematical Acceptance: Strictly the end of the root AST
+	// 4. Terminal positions (last set) get the match outcome
 	info.last.iter(func(p positionID) {
-		accepting[p] = true
+		var annPtr *AnnotationID
+		if a, ok := pm.annByPos[p]; ok {
+			val := a
+			annPtr = &val
+		}
+		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: baseOutcome, Annotation: annPtr}
 	})
 
 	return autarch.NFACreate(
@@ -454,7 +463,6 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 		transitions,
 		nil,
 		[]uint64{0},
-		accepting,
 		outcomes,
 		ctx.indexer,
 	)

@@ -39,8 +39,7 @@ Edge cases:
 - Dead states (no transitions) terminate processing early
 */
 type NFA[TObservation, TStateOutcome any] struct {
-	accepting memcore.MarkRaw
-	outcomes  memcore.MarkRaw
+	outcomes memcore.MarkRaw
 
 	transitions  map[[2]uint64][]uint64
 	epsilonEdges map[uint64][]uint64
@@ -86,24 +85,17 @@ func NFACreate[TObservation, TStateOutcome any](
 	transitions []Transition[TObservation],
 	epsilonEdges map[uint64][]uint64,
 	startingStates []uint64,
-	accepting []bool,
 	outcomes []TStateOutcome,
 	indexer SymbolIndexer[TObservation],
 ) *NFA[TObservation, TStateOutcome] {
-	if len(accepting) != len(outcomes) {
-		panic("accepting and outcomes must be same length")
-	}
-
 	alphabetSize := uint64(len(alphabet))
 	numStates := uint64(len(outcomes))
 
 	validateAlphabet(alphabet, "nfa")
 
-	acceptTable, _ := memarch.MemArchArrayCreate[bool](allocFn, numStates)
 	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
 
 	for i := uint64(0); i < numStates; i++ {
-		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
 		memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
 	}
 
@@ -128,7 +120,6 @@ func NFACreate[TObservation, TStateOutcome any](
 
 	return &NFA[TObservation, TStateOutcome]{
 		outcomes:       outcomeTable,
-		accepting:      acceptTable,
 		transitions:    transitionTable,
 		epsilonEdges:   epsilonMap,
 		startingStates: startingStates,
@@ -272,7 +263,7 @@ NFADebugPrint generates a human-readable string representation of the NFA.
 
 The output includes:
 - alphabet (ID → name)
-- states (accepting status + outcome)
+- states (outcome per state)
 - starting states
 - transition table (state × symbol → set-of-target-states)
 - epsilon edges (per-state)
@@ -426,25 +417,15 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 	sb.WriteString("\n")
 
 	// ============================================================
-	// 3. States (Accepting + Outcome)
+	// 3. States (Outcome)
 	// ============================================================
 	sb.WriteString("States:\n")
-	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
 
 	for s := uint64(0); s < nfa.numStates; s++ {
-		isAccepting := *accCur.PtrAt(s)
 		outcome := *outCur.PtrAt(s)
-
-		status := " "
-		outStr := "—"
-		if isAccepting {
-			status = "A"
-		}
-
-		outStr = nfaDebugFormatOutcome(formatter, outcome)
-
-		sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", status, maxStateWidth, stateStrings[s], outStr))
+		outStr := nfaDebugFormatOutcome(formatter, outcome)
+		sb.WriteString(fmt.Sprintf("  state %*s → %s\n", maxStateWidth, stateStrings[s], outStr))
 	}
 	sb.WriteString("\n")
 
@@ -491,12 +472,7 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 
 		// Rows
 		for s := uint64(0); s < nfa.numStates; s++ {
-			status := " "
-			if *accCur.PtrAt(s) {
-				status = "A"
-			}
-
-			sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
+			sb.WriteString(fmt.Sprintf("  %*s |", maxStateWidth, stateStrings[s]))
 
 			rowStart := s * alphabetSize
 			for symID := uint64(0); symID < alphabetSize; symID++ {
@@ -586,10 +562,6 @@ func NFAOutcomesGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TSta
 	return nfa.outcomes
 }
 
-func NFAAcceptingGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) memcore.MarkRaw {
-	return nfa.accepting
-}
-
 /*
 NFAStartingStatesGet retrieves the list of starting state IDs.
 
@@ -614,6 +586,20 @@ Edge cases:
 */
 func NFAStartingStatesGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) []uint64 {
 	return nfa.startingStates
+}
+
+/*
+NFANumStates returns the number of states in the NFA.
+
+Use cases:
+- NFA-to-DFA conversion (subset construction)
+- Allocation sizing
+
+Time complexity: O(1)
+Space complexity: O(1)
+*/
+func NFANumStates[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) uint64 {
+	return nfa.numStates
 }
 
 /*
@@ -645,8 +631,8 @@ func NFAAlphabetGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TSta
 NFARun processes an input sequence through the NFA and returns all possible outcomes.
 
 The function simulates the NFA by maintaining a set of active states and computing
-epsilon closures at each step. Returns all outcomes from accepting states reached
-after processing the entire input.
+epsilon closures at each step. Returns all outcomes from the final state set
+after processing the entire input. The client interprets which outcomes denote acceptance.
 
 Use cases:
 - Pattern matching with regular expressions
@@ -661,7 +647,7 @@ Prerequisites:
 - input must contain only symbols from the alphabet
 
 Edge cases:
-- Returns empty slice if no accepting states are reached
+- Returns empty slice if no states are reached
 - Returns error if invalid symbol encountered
 - Empty input returns outcomes from starting states' epsilon closure
 */

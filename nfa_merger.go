@@ -107,30 +107,19 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 
 	newNumStates := nfaA.numStates + nfaB.numStates + 1
 
-	newAccepting := make([]bool, newNumStates)
 	newOutcomes := make([]TStateOutcome, newNumStates)
 
-	accA := memstruct.ArrayCursorCreate[bool](nfaA.accepting)
 	outA := memstruct.ArrayCursorCreate[TStateOutcome](nfaA.outcomes)
-
 	for i := uint64(0); i < nfaA.numStates; i++ {
-		if *accA.PtrAt(i) {
-			newAccepting[i+offsetA] = true
-			newOutcomes[i+offsetA] = *outA.PtrAt(i)
-		}
+		newOutcomes[i+offsetA] = *outA.PtrAt(i)
 	}
 
-	accB := memstruct.ArrayCursorCreate[bool](nfaB.accepting)
 	outB := memstruct.ArrayCursorCreate[TStateOutcome](nfaB.outcomes)
-
 	for i := uint64(0); i < nfaB.numStates; i++ {
-		if *accB.PtrAt(i) {
-			newAccepting[i+offsetB] = true
-			newOutcomes[i+offsetB] = *outB.PtrAt(i)
-		}
+		newOutcomes[i+offsetB] = *outB.PtrAt(i)
 	}
 
-	// state 0 is new start → non-accepting (default false)
+	// state 0 is the new start; its outcome remains the zero value (caller may override if needed)
 
 	// ------------------------------------------------------------
 	// 3. Merge symbol transitions
@@ -201,7 +190,6 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 		newTransitions,
 		newEpsilonEdges,
 		[]uint64{0},
-		newAccepting,
 		newOutcomes,
 		newIndexer,
 	)
