@@ -101,7 +101,7 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(patterns))
 
 	for i, instruction := range instructions {
-		c := newThompsonCompiler[TObs, TOutcome](ctx.expander, instruction.Outcome)
+		c := newThompsonCompiler[TObs](ctx.expander, instruction.Outcome)
 		frag := c.compile(instruction.Pattern)
 
 		numStates := c.nextState
@@ -112,10 +112,9 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 		// Since multiple nodes might exit at the same state (especially with epsilon),
 		// we map them to the state-indexed slices.
 		for state, annID := range c.annotations {
-			accepting[state] = true
 			outcomes[state] = AnnotatedOutcome[TOutcome]{
 				Value:      instruction.Outcome,
-				Annotation: annID,
+				Annotation: &annID,
 			}
 		}
 

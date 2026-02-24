@@ -9,7 +9,7 @@ import (
 /* AnnotatedOutcome represents an outcome mapped with annotation ID. */
 type AnnotatedOutcome[TOutcome any] struct {
 	Value      TOutcome
-	Annotation AnnotationID
+	Annotation *AnnotationID
 }
 
 /* RegulaToNFACompiler is an abstraction that provides the API boundary for compiling a RegulaAST into NFAs. */

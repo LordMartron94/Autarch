@@ -228,9 +228,7 @@ func DFACreate[TObservation, TStateOutcome any](
 
 	for i := uint64(0); i < numStates; i++ {
 		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
-		if accepting[i] {
-			memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
-		}
+		memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
 	}
 
 	// ───────────────────────────────────────────────────────────────
@@ -300,7 +298,6 @@ func DFACreate[TObservation, TStateOutcome any](
 	transCur := memstruct.ArrayCursorCreate[uint64](transitionArray)
 
 	for s := uint64(0); s < numStates; s++ {
-
 		if memstruct.ArrayItemGetAtUnsafe[bool](acceptTable, s) {
 			continue
 		}

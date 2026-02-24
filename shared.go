@@ -366,69 +366,72 @@ func (s *dfaStateSubset) States() []uint64 {
 }
 
 /*
-OutcomeResolutionFn resolves which outcome to assign to a DFA state when multiple NFA
-accepting states are merged during NFA-to-DFA conversion.
+OutcomeResolutionFn classifies a DFA state by resolving an outcome from a subset
+of NFA states.
 
-The function receives the list of NFA state IDs in the subset and their corresponding
-outcomes (only accepting states carry meaningful outcomes).
+In a standard NFA, multiple paths may be active simultaneously. During NFA-to-DFA
+conversion (subset construction), these paths are merged. This function is
+responsible for determining which semantic identity the resulting DFA state should
+represent based on the identities of its constituent NFA states.
 
-Use cases:
-- Custom outcome selection logic during DFA construction
-- Priority-based rule resolution
-- Context-aware outcome selection
+Parameters:
+- isAccepting: True if the subset contains at least one NFA state marked as terminal.
+- states: Parallel slice of all NFA state IDs present in the current subset.
+- outcomes: Parallel slice of all outcomes associated with the NFA states.
 
-Time complexity: Should be O(n) where n is number of states
-Space complexity: Should be O(1) - avoid allocations in hot path
+Decoupling Logic:
+Unlike traditional Lexer-only resolution, this function receives outcomes for
+ALL states in the subset, not just terminal ones. This allows the DFA to behave
+as a Moore Machine, tracking "situational awareness" (e.g., current grammar rule)
+even in non-accepting intermediate states.
 
-Prerequisites:
-- states and outcomes must be parallel arrays (same length)
+Usage for Parsers:
+ 1. Priority: If multiple annotations exist, the function should return the
+    most specific annotation (e.g., inner-most grammar rule).
+ 2. Hierarchy: The 'ok' return value indicates if a meaningful identity was
+    found. If 'ok' is false, the DFA state outcome is zero-initialized.
+ 3. Termination: 'isAccepting' should be used to distinguish between
+    "valid syntax completion" and "mid-rule progress."
 
-Edge cases:
-- Empty states list represents a non-accepting DFA state
-- All zero-value outcomes represent no accepting state
-- Function should handle any number of states efficiently
-
-Only accepting states are expected to carry semantic outcomes. Non-accepting states
-should contain the zero value of TStateOutcome.
+Performance:
+  - Time complexity: O(n) where n is the number of states in the subset.
+  - Space complexity: O(1) - The slices are provided by the caller; avoid
+    allocating new collections within this function.
 */
 type OutcomeResolutionFn[TStateOutcome any] func(
+	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool)
 
 /*
-OutcomeResolutionFirst selects the accepting outcome with the lowest state ID.
+OutcomeResolutionFirst selects the outcome from the NFA state with the lowest ID.
 
-This corresponds to rule-order priority where earlier rules win.
+In a priority-based system, this corresponds to "earliest rule wins." This
+version is "Aware," meaning it receives the mathematical acceptance status
+of the subset but prioritizes finding the most relevant semantic outcome
+from all states present.
 
 Use cases:
-- Default outcome resolution during DFA construction
-- Priority-based lexers (first rule added wins)
-- Deterministic resolution
+- Priority-based grammar recognition (first declared rule takes precedence)
+- Preserving situational context in non-terminal DFA states
+- Deterministic path resolution in Moore-style machines
 
 Time complexity: O(n) where n is number of states
 Space complexity: O(1)
-
-Prerequisites:
-- states and outcomes must be parallel arrays
-
-Edge cases:
-- Returns ok=false if no accepting states exist
-- Returns ok=false if states list is empty
 */
 func OutcomeResolutionFirst[TStateOutcome any](
+	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {
-
+	// We initialize with the maximum possible ID to find the minimum.
 	bestStateID := ^uint64(0)
 
 	for i, s := range states {
-		o := outcomes[i]
-
 		if s < bestStateID {
 			bestStateID = s
-			outcome = o
+			outcome = outcomes[i]
 			ok = true
 		}
 	}
@@ -437,37 +440,31 @@ func OutcomeResolutionFirst[TStateOutcome any](
 }
 
 /*
-OutcomeResolutionLast selects the accepting outcome with the highest state ID.
+OutcomeResolutionLast selects the outcome from the NFA state with the highest ID.
 
-This corresponds to reverse rule-order priority where later rules override earlier ones.
+In an override-based system, this corresponds to "latest rule wins." This
+is useful when a grammar allows later definitions to shadow earlier ones
+within the same subset.
 
 Use cases:
-- Override-based lexers
-- Alternative priority schemes
+- Rule shadowing and overrides
+- Alternative priority schemes for complex grammar branches
+- Contextual state classification where the "latest" transition is dominant
 
 Time complexity: O(n) where n is number of states
 Space complexity: O(1)
-
-Prerequisites:
-- states and outcomes must be parallel arrays
-
-Edge cases:
-- Returns ok=false if no accepting states exist
-- Returns ok=false if states list is empty
 */
 func OutcomeResolutionLast[TStateOutcome any](
+	isAccepting bool,
 	states []uint64,
 	outcomes []TStateOutcome,
 ) (outcome TStateOutcome, ok bool) {
-
 	bestStateID := uint64(0)
 
 	for i, s := range states {
-		o := outcomes[i]
-
 		if !ok || s > bestStateID {
 			bestStateID = s
-			outcome = o
+			outcome = outcomes[i]
 			ok = true
 		}
 	}

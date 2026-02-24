@@ -6,6 +6,7 @@ import (
 	"memcore"
 	"memstruct"
 	"sort"
+	"strings"
 )
 
 /*
@@ -103,9 +104,7 @@ func NFACreate[TObservation, TStateOutcome any](
 
 	for i := uint64(0); i < numStates; i++ {
 		memstruct.ArraySetAtUnsafe(acceptTable, i, accepting[i])
-		if accepting[i] {
-			memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
-		}
+		memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
 	}
 
 	transitionTable := make(map[[2]uint64][]uint64)
@@ -139,138 +138,407 @@ func NFACreate[TObservation, TStateOutcome any](
 	}
 }
 
+// ============================================================
+// NFA DEBUG PRINT (DFA-like, deterministic, table-based)
+// ============================================================
+
 /*
-NFADebugPrint outputs a human-readable representation of the NFA to stdout.
+NFADebugFormatter provides optional formatting functions to make NFA debug output
+more readable by converting numeric values to human-readable representations.
 
-The output includes the alphabet, state outcomes, starting states, and all
-transitions in a sorted, deterministic format for debugging purposes.
+Each formatting function is optional (nil means use default formatting). This allows
+partial formatting (e.g., only format symbol names, not IDs).
 
-Use cases:
-- Debugging automaton construction
-- Verifying transition correctness
-- Understanding automaton structure
+Notes vs DFA debug:
+  - NFAs can have *sets* of target states per (state, symbol), so cells render as "{1,2,7}"
+    (or "—" if empty).
+  - Epsilon transitions are displayed as a dedicated section and also (optionally) as
+    an "ε" column in the transition table.
 
-Time complexity: O(s + t) where s is states, t is transitions
-Space complexity: O(1) - only temporary sorting buffers
+Performance guidance:
+- Formatting hooks should be fast; avoid heavy allocations in hot loops.
+*/
+type NFADebugFormatter[TObservation, TStateOutcome any] struct {
+	FormatSymbolName   func(id uint64, def SymbolDefinition[TObservation]) string
+	FormatStateOutcome func(outcome TStateOutcome) string
+
+	FormatSymbolID func(symbolID uint64) string
+	FormatStateID  func(stateID uint64) string
+
+	// FormatStateSet formats a set of state IDs (already sorted ascending).
+	// If nil, a default "{a,b,c}" format is used.
+	FormatStateSet func(sortedStates []uint64) string
+
+	// MaxCellWidth caps rendered cell width in the transition table.
+	// If 0, a sane default is used.
+	MaxCellWidth int
+}
+
+// ------------------------------------------------------------ helpers
+
+func nfaDebugFormatStateID[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	id uint64,
+) string {
+	if formatter != nil && formatter.FormatStateID != nil {
+		return formatter.FormatStateID(id)
+	}
+	return fmt.Sprintf("%d", id)
+}
+
+func nfaDebugFormatSymbolID[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	id uint64,
+) string {
+	if formatter != nil && formatter.FormatSymbolID != nil {
+		return formatter.FormatSymbolID(id)
+	}
+	return fmt.Sprintf("%d", id)
+}
+
+func nfaDebugFormatSymbolName[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	id uint64,
+	def SymbolDefinition[TObservation],
+) string {
+	if formatter != nil && formatter.FormatSymbolName != nil {
+		return formatter.FormatSymbolName(id, def)
+	}
+	return def.Name
+}
+
+func nfaDebugFormatOutcome[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	out TStateOutcome,
+) string {
+	if formatter != nil && formatter.FormatStateOutcome != nil {
+		return formatter.FormatStateOutcome(out)
+	}
+	return fmt.Sprintf("%v", out)
+}
+
+func nfaDebugDefaultFormatStateSet(sorted []uint64) string {
+	if len(sorted) == 0 {
+		return "—"
+	}
+	if len(sorted) == 1 {
+		return fmt.Sprintf("{%d}", sorted[0])
+	}
+	var sb strings.Builder
+	sb.Grow(2 + len(sorted)*3)
+	sb.WriteByte('{')
+	for i, v := range sorted {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(fmt.Sprintf("%d", v))
+	}
+	sb.WriteByte('}')
+	return sb.String()
+}
+
+func nfaDebugFormatStateSet[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	sorted []uint64,
+) string {
+	if len(sorted) == 0 {
+		return "—"
+	}
+	if formatter != nil && formatter.FormatStateSet != nil {
+		return formatter.FormatStateSet(sorted)
+	}
+	return nfaDebugDefaultFormatStateSet(sorted)
+}
+
+func nfaDebugTruncateCell(s string, max int) string {
+	if max <= 0 {
+		max = 32
+	}
+	if len(s) <= max {
+		return s
+	}
+	// Keep it deterministic + useful.
+	// Example: "{1,2,3,4,5,6,7,8,9}" -> "{1,2,3,4,5,6,7,8…}"
+	if max <= 1 {
+		return "…"
+	}
+	return s[:max-1] + "…"
+}
+
+// ------------------------------------------------------------ PUBLIC ENTRY
+
+/*
+NFADebugPrint generates a human-readable string representation of the NFA.
+
+The output includes:
+- alphabet (ID → name)
+- states (accepting status + outcome)
+- starting states
+- transition table (state × symbol → set-of-target-states)
+- epsilon edges (per-state)
+
+Layout is deterministic:
+- starting states sorted ascending
+- transition keys rendered as a dense table by symbol ID order
+- epsilon edges sorted by from-state, and targets sorted ascending
+
+Time complexity:
+  - O(s * a + t log t + e log e) to build a stable table where:
+    s = states, a = alphabet size, t = symbol transitions, e = epsilon edges
+
+Space complexity:
+- O(s * a) for cell buffers (string table) + temporary sorting buffers
 
 Prerequisites:
 - nfa must be a valid NFA instance
 
 Edge cases:
-- Handles empty alphabets and state sets gracefully
-- Invalid symbol IDs are marked in output
+  - Handles empty alphabets and state sets gracefully
+  - Invalid symbol IDs are ignored in the dense table (they still exist in the map,
+    but you can’t render them into the [0..alphabetSize) table deterministically)
+  - If formatter is nil, uses default formatting (backward compatible)
 */
 func NFADebugPrint[TObservation, TStateOutcome any](
 	nfa *NFA[TObservation, TStateOutcome],
-) {
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+) string {
+	var sb strings.Builder
 
-	fmt.Println("===== NFA DEBUG PRINT =====")
+	// ============================================================
+	// 1. Pre-calculation for Layout
+	// ============================================================
 
-	// -------------------------------------------------------
-	// Alphabet
-	// -------------------------------------------------------
-	fmt.Println("Alphabet:")
-	for i, symDef := range nfa.alphabet {
-		fmt.Printf("  [%d] symbolID=%d  name=%s\n", i, symDef.ID, symDef.Name)
-	}
-	fmt.Println()
-
-	// -------------------------------------------------------
-	// States (accepting + outcomes)
-	// -------------------------------------------------------
-	fmt.Println("States:")
-
-	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
-
+	// State ID strings + width
+	maxStateWidth := 5 // min header width
+	stateStrings := make([]string, nfa.numStates)
 	for s := uint64(0); s < nfa.numStates; s++ {
-
-		isAccepting := *accCur.PtrAt(s)
-
-		if isAccepting {
-			out := *outCur.PtrAt(s)
-			fmt.Printf("  State %d → %v\n", s, out)
-		} else {
-			fmt.Printf("  State %d → —\n", s)
+		stateStrings[s] = nfaDebugFormatStateID(formatter, s)
+		if len(stateStrings[s]) > maxStateWidth {
+			maxStateWidth = len(stateStrings[s])
 		}
 	}
-	fmt.Println()
 
-	// -------------------------------------------------------
-	// Starting states
-	// -------------------------------------------------------
-	fmt.Println("Starting States:")
+	// Symbol ID strings + width
+	alphabetSize := uint64(len(nfa.alphabet))
+	symbolStrings := make([]string, alphabetSize)
+	maxSymbolWidth := 3
+	for id := uint64(0); id < alphabetSize; id++ {
+		symbolStrings[id] = nfaDebugFormatSymbolID(formatter, id)
+		if len(symbolStrings[id]) > maxSymbolWidth {
+			maxSymbolWidth = len(symbolStrings[id])
+		}
+	}
 
+	maxCellWidth := 32
+	if formatter != nil && formatter.MaxCellWidth > 0 {
+		maxCellWidth = formatter.MaxCellWidth
+	}
+
+	// Build dense table cells (state x symbol).
+	// Each cell: "—" or "{...}" already truncated.
+	// Deterministic because we sort target sets.
+	cells := make([]string, nfa.numStates*alphabetSize)
+	for i := range cells {
+		cells[i] = "—"
+	}
+
+	// Fill table from sparse map.
+	if alphabetSize > 0 {
+		// Collect keys deterministically (from, sym) but we will render as table anyway.
+		// Still, sorting helps make any debugging of anomalies easier if you instrument.
+		keys := make([][2]uint64, 0, len(nfa.transitions))
+		for k := range nfa.transitions {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i][0] == keys[j][0] {
+				return keys[i][1] < keys[j][1]
+			}
+			return keys[i][0] < keys[j][0]
+		})
+
+		for _, k := range keys {
+			from := k[0]
+			symID := k[1]
+
+			if from >= nfa.numStates {
+				continue
+			}
+			if symID >= alphabetSize {
+				// Can't place into dense [0..alphabetSize) columns.
+				continue
+			}
+
+			nexts := nfa.transitions[k]
+			if len(nexts) == 0 {
+				continue
+			}
+
+			nsCopy := make([]uint64, len(nexts))
+			copy(nsCopy, nexts)
+			sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
+
+			cell := nfaDebugFormatStateSet(formatter, nsCopy)
+			cell = nfaDebugTruncateCell(cell, maxCellWidth)
+
+			cells[from*alphabetSize+symID] = cell
+		}
+	}
+
+	// Determine max cell width for table alignment (bounded by maxCellWidth).
+	maxRenderedCellWidth := 1
+	for _, c := range cells {
+		if len(c) > maxRenderedCellWidth {
+			maxRenderedCellWidth = len(c)
+		}
+	}
+	if maxRenderedCellWidth > maxCellWidth {
+		maxRenderedCellWidth = maxCellWidth
+	}
+
+	// Starting states (sorted)
 	startCopy := make([]uint64, len(nfa.startingStates))
 	copy(startCopy, nfa.startingStates)
 	sort.Slice(startCopy, func(i, j int) bool { return startCopy[i] < startCopy[j] })
 
-	for _, st := range startCopy {
-		fmt.Printf("  %d\n", st)
-	}
-	fmt.Println()
-
-	// -------------------------------------------------------
-	// Symbol Transitions
-	// -------------------------------------------------------
-	fmt.Println("Symbol Transitions:")
-
-	keys := make([][2]uint64, 0, len(nfa.transitions))
-	for k := range nfa.transitions {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i][0] == keys[j][0] {
-			return keys[i][1] < keys[j][1]
-		}
-		return keys[i][0] < keys[j][0]
-	})
-
-	for _, k := range keys {
-		from := k[0]
-		symbolID := k[1]
-
-		var symbolDesc string
-		if symbolID < uint64(len(nfa.alphabet)) {
-			symDef := nfa.alphabet[symbolID]
-			symbolDesc = symDef.Name
-		} else {
-			symbolDesc = fmt.Sprintf("<invalid symbol id=%d>", symbolID)
-		}
-
-		nexts := nfa.transitions[k]
-
-		nsCopy := make([]uint64, len(nexts))
-		copy(nsCopy, nexts)
-		sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
-
-		fmt.Printf("  (%d) --[%s]--> %v\n", from, symbolDesc, nsCopy)
-	}
-	fmt.Println()
-
-	// -------------------------------------------------------
-	// Epsilon edges
-	// -------------------------------------------------------
-	fmt.Println("Epsilon Edges:")
-
+	// Epsilon keys (sorted)
 	epsilonKeys := make([]uint64, 0, len(nfa.epsilonEdges))
-	for k := range nfa.epsilonEdges {
-		epsilonKeys = append(epsilonKeys, k)
+	for from := range nfa.epsilonEdges {
+		epsilonKeys = append(epsilonKeys, from)
 	}
 	sort.Slice(epsilonKeys, func(i, j int) bool { return epsilonKeys[i] < epsilonKeys[j] })
 
-	for _, from := range epsilonKeys {
-		nexts := nfa.epsilonEdges[from]
+	// ============================================================
+	// 2. Header & Alphabet
+	// ============================================================
+	sb.WriteString("NFA Debug Print\n")
+	sb.WriteString("=============================\n\n")
 
-		nsCopy := make([]uint64, len(nexts))
-		copy(nsCopy, nexts)
-		sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
+	sb.WriteString("Alphabet:\n")
+	if alphabetSize == 0 {
+		sb.WriteString("  (empty)\n")
+	} else {
+		for id, symDef := range nfa.alphabet {
+			name := nfaDebugFormatSymbolName(formatter, uint64(id), symDef)
+			sb.WriteString(fmt.Sprintf("  %s → %s\n", symbolStrings[id], name))
+		}
+	}
+	sb.WriteString("\n")
 
-		fmt.Printf("  (%d) --[ε]--> %v\n", from, nsCopy)
+	// ============================================================
+	// 3. States (Accepting + Outcome)
+	// ============================================================
+	sb.WriteString("States:\n")
+	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
+
+	for s := uint64(0); s < nfa.numStates; s++ {
+		isAccepting := *accCur.PtrAt(s)
+		outcome := *outCur.PtrAt(s)
+
+		status := " "
+		outStr := "—"
+		if isAccepting {
+			status = "A"
+		}
+
+		outStr = nfaDebugFormatOutcome(formatter, outcome)
+
+		sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", status, maxStateWidth, stateStrings[s], outStr))
+	}
+	sb.WriteString("\n")
+
+	// ============================================================
+	// 4. Starting States
+	// ============================================================
+	sb.WriteString("Starting States:\n")
+	if len(startCopy) == 0 {
+		sb.WriteString("  (none)\n\n")
+	} else {
+		for _, st := range startCopy {
+			if st < nfa.numStates {
+				sb.WriteString(fmt.Sprintf("  %s\n", stateStrings[st]))
+			} else {
+				sb.WriteString(fmt.Sprintf("  <invalid state id=%d>\n", st))
+			}
+		}
+		sb.WriteString("\n")
 	}
 
-	fmt.Println("===== END NFA DEBUG PRINT =====")
+	// ============================================================
+	// 5. Transition Table (Symbol)
+	// ============================================================
+	sb.WriteString("Transitions (Symbol):\n")
+
+	if nfa.numStates == 0 {
+		sb.WriteString("  (no states)\n\n")
+	} else if alphabetSize == 0 {
+		sb.WriteString("  (alphabet empty)\n\n")
+	} else {
+		// Header row
+		sb.WriteString(strings.Repeat(" ", maxStateWidth+4) + "|")
+		for id := uint64(0); id < alphabetSize; id++ {
+			sb.WriteString(fmt.Sprintf(" %*s ", maxRenderedCellWidth, symbolStrings[id]))
+		}
+		sb.WriteString("\n")
+
+		// Separator
+		sb.WriteString(strings.Repeat("-", maxStateWidth+4) + "+")
+		for id := uint64(0); id < alphabetSize; id++ {
+			sb.WriteString(strings.Repeat("-", maxRenderedCellWidth+2))
+		}
+		sb.WriteString("\n")
+
+		// Rows
+		for s := uint64(0); s < nfa.numStates; s++ {
+			status := " "
+			if *accCur.PtrAt(s) {
+				status = "A"
+			}
+
+			sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
+
+			rowStart := s * alphabetSize
+			for symID := uint64(0); symID < alphabetSize; symID++ {
+				cell := cells[rowStart+symID]
+				// Ensure bounded width alignment
+				if len(cell) > maxRenderedCellWidth {
+					cell = nfaDebugTruncateCell(cell, maxRenderedCellWidth)
+				}
+				sb.WriteString(fmt.Sprintf(" %*s ", maxRenderedCellWidth, cell))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// ============================================================
+	// 6. Epsilon Edges
+	// ============================================================
+	sb.WriteString("Epsilon Edges:\n")
+	if len(epsilonKeys) == 0 {
+		sb.WriteString("  (none)\n")
+	} else {
+		for _, from := range epsilonKeys {
+			nexts := nfa.epsilonEdges[from]
+			nsCopy := make([]uint64, len(nexts))
+			copy(nsCopy, nexts)
+			sort.Slice(nsCopy, func(i, j int) bool { return nsCopy[i] < nsCopy[j] })
+
+			fromStr := fmt.Sprintf("%d", from)
+			if from < nfa.numStates {
+				fromStr = stateStrings[from]
+			}
+
+			// Format using the same state-set formatter, but keep truncation conservative.
+			setStr := nfaDebugFormatStateSet(formatter, nsCopy)
+			setStr = nfaDebugTruncateCell(setStr, maxCellWidth)
+
+			sb.WriteString(fmt.Sprintf("  (%s) --[ε]--> %s\n", fromStr, setStr))
+		}
+	}
+
+	return sb.String()
 }
 
 /*
@@ -426,13 +694,10 @@ func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcom
 
 	results := make([]TStateOutcome, 0)
 
-	accCur := memstruct.ArrayCursorCreate[bool](nfa.accepting)
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
 
 	for _, s := range current {
-		if *accCur.PtrAt(s) {
-			results = append(results, *outCur.PtrAt(s))
-		}
+		results = append(results, *outCur.PtrAt(s))
 	}
 
 	return results, nil

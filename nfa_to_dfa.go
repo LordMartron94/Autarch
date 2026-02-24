@@ -238,23 +238,36 @@ func resolveDFAOutcome[TS, TO any](
 	accArray := NFAAcceptingGet(nfa)
 	outArray := NFAOutcomesGet(nfa)
 
-	var aStates []uint64
-	var aOutcomes []TO
+	var allStates []uint64
+	var allOutcomes []TO
+	isAccepting := false
 
+	// Gather the full situational context of the subset
 	for _, s := range sub.States() {
+		// Mathematical Acceptance: Does this subset contain any terminal NFA states?
 		if memstruct.ArrayItemGetAtUnsafe[bool](accArray, s) {
-			aStates = append(aStates, s)
-			aOutcomes = append(aOutcomes, memstruct.ArrayItemGetAtUnsafe[TO](outArray, s))
+			isAccepting = true
 		}
+
+		// Semantic Identity: Collect outcomes from ALL states (accepting or not).
+		allStates = append(allStates, s)
+		allOutcomes = append(allOutcomes, memstruct.ArrayItemGetAtUnsafe[TO](outArray, s))
 	}
 
-	if len(aStates) == 0 {
+	// Handle the empty/sink state case
+	if len(allStates) == 0 {
 		var zero TO
 		return false, zero
 	}
 
-	outcome, ok := resFn(aStates, aOutcomes)
-	return ok, outcome
+	outcome, ok := resFn(isAccepting, allStates, allOutcomes)
+
+	if !ok {
+		var zero TO
+		return isAccepting, zero
+	}
+
+	return isAccepting, outcome
 }
 
 func createTempAllocator(minMem, maxMem memcore.MemoryUnitBytes) memcore.MarkRaw {
