@@ -140,6 +140,10 @@ more readable by converting numeric values to human-readable representations.
 Each formatting function is optional (nil means use default formatting). This allows
 partial formatting (e.g., only format symbol names, not IDs).
 
+FormatStateIndicator supplies the single character shown between brackets for each
+state (e.g. [A] for accepting, [S] for start). If nil, no bracket column is shown.
+Return a single character; only the first rune is used for alignment.
+
 Notes vs DFA debug:
   - NFAs can have *sets* of target states per (state, symbol), so cells render as "{1,2,7}"
     (or "—" if empty).
@@ -155,6 +159,10 @@ type NFADebugFormatter[TObservation, TStateOutcome any] struct {
 
 	FormatSymbolID func(symbolID uint64) string
 	FormatStateID  func(stateID uint64) string
+
+	// FormatStateIndicator returns the single-character indicator shown in [ ] for this state.
+	// E.g. "A" for accepting, "S" for start. If nil, no bracket is shown. Only the first rune is used.
+	FormatStateIndicator func(stateID uint64, outcome TStateOutcome) string
 
 	// FormatStateSet formats a set of state IDs (already sorted ascending).
 	// If nil, a default "{a,b,c}" format is used.
@@ -241,6 +249,21 @@ func nfaDebugFormatStateSet[TObservation, TStateOutcome any](
 	return nfaDebugDefaultFormatStateSet(sorted)
 }
 
+func nfaDebugStateIndicatorRune[TObservation, TStateOutcome any](
+	formatter *NFADebugFormatter[TObservation, TStateOutcome],
+	stateID uint64,
+	outcome TStateOutcome,
+) string {
+	if formatter != nil && formatter.FormatStateIndicator != nil {
+		s := formatter.FormatStateIndicator(stateID, outcome)
+		for _, r := range s {
+			return string(r)
+		}
+		return " "
+	}
+	return ""
+}
+
 func nfaDebugTruncateCell(s string, max int) string {
 	if max <= 0 {
 		max = 32
@@ -323,6 +346,16 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 	maxCellWidth := 32
 	if formatter != nil && formatter.MaxCellWidth > 0 {
 		maxCellWidth = formatter.MaxCellWidth
+	}
+
+	hasStateIndicator := formatter != nil && formatter.FormatStateIndicator != nil
+	stateIndicators := make([]string, nfa.numStates)
+	if hasStateIndicator {
+		outCurForInd := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
+		for s := uint64(0); s < nfa.numStates; s++ {
+			outcome := *outCurForInd.PtrAt(s)
+			stateIndicators[s] = nfaDebugStateIndicatorRune(formatter, s, outcome)
+		}
 	}
 
 	// Build dense table cells (state x symbol).
@@ -425,7 +458,11 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 	for s := uint64(0); s < nfa.numStates; s++ {
 		outcome := *outCur.PtrAt(s)
 		outStr := nfaDebugFormatOutcome(formatter, outcome)
-		sb.WriteString(fmt.Sprintf("  state %*s → %s\n", maxStateWidth, stateStrings[s], outStr))
+		if hasStateIndicator {
+			sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", stateIndicators[s], maxStateWidth, stateStrings[s], outStr))
+		} else {
+			sb.WriteString(fmt.Sprintf("  state %*s → %s\n", maxStateWidth, stateStrings[s], outStr))
+		}
 	}
 	sb.WriteString("\n")
 
@@ -457,14 +494,18 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 		sb.WriteString("  (alphabet empty)\n\n")
 	} else {
 		// Header row
-		sb.WriteString(strings.Repeat(" ", maxStateWidth+4) + "|")
+		leadWidth := maxStateWidth + 4
+		if hasStateIndicator {
+			leadWidth += 3 // " [X]"
+		}
+		sb.WriteString(strings.Repeat(" ", leadWidth) + "|")
 		for id := uint64(0); id < alphabetSize; id++ {
 			sb.WriteString(fmt.Sprintf(" %*s ", maxRenderedCellWidth, symbolStrings[id]))
 		}
 		sb.WriteString("\n")
 
 		// Separator
-		sb.WriteString(strings.Repeat("-", maxStateWidth+4) + "+")
+		sb.WriteString(strings.Repeat("-", leadWidth) + "+")
 		for id := uint64(0); id < alphabetSize; id++ {
 			sb.WriteString(strings.Repeat("-", maxRenderedCellWidth+2))
 		}
@@ -472,7 +513,11 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 
 		// Rows
 		for s := uint64(0); s < nfa.numStates; s++ {
-			sb.WriteString(fmt.Sprintf("  %*s |", maxStateWidth, stateStrings[s]))
+			if hasStateIndicator {
+				sb.WriteString(fmt.Sprintf("  [%s] %*s |", stateIndicators[s], maxStateWidth, stateStrings[s]))
+			} else {
+				sb.WriteString(fmt.Sprintf("  %*s |", maxStateWidth, stateStrings[s]))
+			}
 
 			rowStart := s * alphabetSize
 			for symID := uint64(0); symID < alphabetSize; symID++ {

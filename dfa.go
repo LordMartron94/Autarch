@@ -548,10 +548,16 @@ more readable by converting numeric values to human-readable representations.
 Each formatting function is optional (nil means use default formatting). This allows
 partial formatting (e.g., only format symbol names, not IDs).
 
+FormatStateIndicator supplies the single character shown between brackets for each
+state (e.g. [A] for accepting, [D] for dead). If nil, default is " " for normal
+states and "D" for dead states. Return a single character (e.g. "A") so clients can
+mark accepting or other state kinds; only the first rune is used for alignment.
+
 Use cases:
 - Converting numeric symbol names to character representations (e.g., "105" → "'i'")
 - Formatting state outcomes for better readability
 - Customizing debug output for specific observation types
+- Marking accepting states with "A" or other single-character indicators
 - Improving debugging experience for complex automata
 
 Time complexity: O(1) per formatting call
@@ -560,6 +566,7 @@ Space complexity: O(1) per formatting call
 Prerequisites:
 - All formatting functions should be fast (no allocations if possible)
 - Formatting functions should handle edge cases gracefully
+- FormatStateIndicator should return a single character (first rune is used)
 
 Edge cases:
 - Nil formatter functions fall back to default formatting
@@ -570,6 +577,30 @@ type DFADebugFormatter[TObservation, TStateOutcome any] struct {
 	FormatStateOutcome func(outcome TStateOutcome) string
 	FormatSymbolID     func(symbolID uint64) string
 	FormatStateID      func(stateID uint64) string
+
+	// FormatStateIndicator returns the single-character indicator shown in [ ] for this state.
+	// E.g. "A" for accepting, " " for normal, "D" for dead. If nil, " " is used except "D" when isDead.
+	// Only the first rune of the return value is used for alignment.
+	FormatStateIndicator func(state uint64, outcome TStateOutcome, isDead bool) string
+}
+
+func dfaDebugStateIndicatorRune[TObservation, TStateOutcome any](
+	formatter *DFADebugFormatter[TObservation, TStateOutcome],
+	state uint64,
+	outcome TStateOutcome,
+	isDead bool,
+) string {
+	if formatter != nil && formatter.FormatStateIndicator != nil {
+		s := formatter.FormatStateIndicator(state, outcome, isDead)
+		for _, r := range s {
+			return string(r)
+		}
+		return " "
+	}
+	if isDead {
+		return "D"
+	}
+	return " "
 }
 
 /*
@@ -666,10 +697,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 			outcomeStr = fmt.Sprintf("%v", outcome)
 		}
 
-		status := " "
-		if isDead {
-			status = "D" // Dead
-		}
+		status := dfaDebugStateIndicatorRune(formatter, s, outcome, isDead)
 
 		sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", status, maxStateWidth, stateStrings[s], outcomeStr))
 	}
@@ -697,17 +725,19 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	for s := uint64(0); s < dfa.numStates; s++ {
 		isDead := dfa.deadStates[s]
-		status := " "
-		if isDead {
-			status = "D"
-		}
+		outcome := *outCur.PtrAt(s)
+		status := dfaDebugStateIndicatorRune(formatter, s, outcome, isDead)
 
 		sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
 
 		rowStart := s * dfa.alphabetSize
 		for symID := uint64(0); symID < dfa.alphabetSize; symID++ {
 			target := *transCur.PtrAt(rowStart + symID)
-			sb.WriteString(fmt.Sprintf(" %*s ", maxSymbolWidth, stateStrings[target]))
+			cell := stateStrings[target]
+			if dfa.deadStates[target] {
+				cell = "—"
+			}
+			sb.WriteString(fmt.Sprintf(" %*s ", maxSymbolWidth, cell))
 		}
 		sb.WriteString("\n")
 	}
