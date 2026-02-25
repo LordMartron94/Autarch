@@ -234,7 +234,6 @@ func DFACreate[TObservation, TStateOutcome any](
 	// Populate transitions with strict validation
 	// ───────────────────────────────────────────────────────────────
 	for _, t := range transitions {
-
 		if t.Symbol.SymbolID >= alphabetSize {
 			panic(fmt.Errorf(
 				"DFACreate: symbol ID out of range: %d (max %d)",
@@ -290,7 +289,7 @@ func DFACreate[TObservation, TStateOutcome any](
 		isDead := true
 
 		for a := uint64(0); a < alphabetSize; a++ {
-			if *transCur.PtrAt(row+a) != s {
+			if *transCur.PtrAt(row + a) != s {
 				isDead = false
 				break
 			}
