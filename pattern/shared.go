@@ -53,12 +53,12 @@ type PatternCompilationInstruction[TObservation, TOutcome, TPattern any] struct 
 SharedCompilationContext is a node-agnostic compilation context for pattern compilation.
 
 It holds the unified symbol collector, alphabet, expander, and indexer. TPattern is the AST type
-you will prepare (e.g. *RegulaAST[TObs] for Regula, *VistraAST[TObs] for Vistra). Compilers call
+you will prepare (e.g. *RegulaAST[TObs] for Regula). Compilers call
 ctx.fullPrepare(patterns, collectSymbols, bindIDs, bindState) with pattern-specific callbacks.
 Create the context with the same TPattern as the compiler (e.g. CreateSharedCompilationContext[TObs, *RegulaAST[TObs]](...) for Regula).
 
 Use cases:
-- Compiling multiple Regula or Vistra patterns with shared symbol IDs
+- Compiling multiple Regula patterns with shared symbol IDs
 - Building lexers where all rules in a state share one alphabet
 - Reusing one context for mixed or future AST types
 */
@@ -92,7 +92,7 @@ func CreateSharedCompilationContext[TObservation, TPattern any](
 
 /*
 getCollector returns the symbol feeder for this context. Pass it to AST-specific collect and bind
-functions (e.g. regulaCollectSymbols, regulaBindIDs, VistraCollectSymbols, VistraBindIDs).
+functions (e.g. regulaCollectSymbols, regulaBindIDs).
 */
 func (ctx *SharedCompilationContext[TObs, TPattern]) getCollector() symbolFeeder[TObs] {
 	return ctx.collector

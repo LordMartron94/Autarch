@@ -9,7 +9,6 @@ autarch provides efficient, memory-managed implementations of finite automata wi
 - **NFA-to-DFA conversion** via subset construction
 - **DFA minimization** using Hopcroft's algorithm
 - **NFA merging** for combining multiple automata
-- **DPDA (Deterministic Pushdown Automaton)** for context-free parsing and nested structure recognition
 - **Generic type support** for flexible observation and outcome types
 
 The library is designed for use in lexers, parsers, and pattern matching systems where deterministic state machines are required for efficient recognition of regular languages.
@@ -148,65 +147,6 @@ minimized := autarch.DFAMinimize(
 // Process input efficiently
 outcome, err := autarch.DFARun(minimized, []rune{'a', 'b'})
 // outcome is the state outcome; client interprets it as accept/reject (e.g. outcome == true)
-```
-
-### `DPDA[TObservation, TStackSymbol, TStateOutcome]`
-
-Deterministic Pushdown Automaton with a stack for context-free parsing and nested structure recognition. Transitions are keyed by (state, input symbol, stack top) and specify a stack operation (Push, Pop, Replace, NoOp) and next state. A **bottom-of-stack (BOS) symbol** is required: the stack always contains at least BOS, so Peek and Replace are safe.
-
-**Key Types:**
-- `DPDA` - The automaton (input alphabet, stack alphabet, transition table, outcomes, BOS symbol ID)
-- `DPDAState` - Runtime state (current state index and symbol stack; BOS stored at create)
-- `DPDATransition` - One transition: from (CurrentState, InputSymbol, CurrentStackTop) to NextState with Operation
-- `DPDATransitionResult` - Result of DPDATransitionGet (NextState, OpKind, PushOrReplaceSymbolID)
-- `StackOperationKind` / `StackOperation` - Push, Pop, Replace, NoOp and optional stack symbol
-
-**Key Functions:**
-- `DPDACreate` - Builds a DPDA from alphabets, **bottomStackSymbolID**, transitions, outcomes, and indexer
-- `DPDAStateCreate` - Allocates initial state (state 0, stack with BOS only)
-- `DPDAStateReset` - Clears stack to BOS and sets current state; optional keepCapacity
-- `DPDAStateDestroy` - Releases state (no-op for arena allocators)
-- `DPDAStateClone` - Copies state and stack for backtracking/debugging
-- `DPDAStep` - One transition via observation; updates state.currentState; panics if no transition
-- `DPDATryStep` - Like DPDAStep but returns ok=false instead of panicking
-- `DPDAStepSymbol` - One transition by input symbol ID (no indexer); returns true if transition existed
-- `DPDATransitionGet` - Zero-allocation transition lookup (q, inputID, stackTopID) → result, ok
-- `DPDACurrentStackTop` - Stack-alphabet symbol at top of stack
-- `DPDAStackTopID`, `DPDAStackDepth`, `DPDAStackClearToBottom`, `DPDAStackPushID`, `DPDAStackPopID` - Stack accessors
-- `DPDANumStates`, `DPDAInputAlphabet`, `DPDAStackAlphabet`, `DPDAOutcome`, `DPDAIsAccepting` - Metadata and acceptance
-- `DPDAIsAcceptingStateAndStackDepthOne` - Accepting state and stack depth 1 (for nested DPDAs)
-- `DPDAAvailableInputs` - Input symbol IDs with a transition from (q, stackTopID) (diagnostics)
-- `DPDADebugPrint`, `DPDADebugFormatter`, `DPDAValidate` - Diagnostics (human-readable dump with optional formatter; per-state transition table stack × input → next state, op)
-- `DPDARun` - Reset state, step through observations; returns finalState, ok, err
-- `DPDARunAndAccept` - Run then return isAccepting(outcome) for final state
-
-**Acceptance** is client-defined via a callback: `DPDAIsAccepting(dpda, stateID, isAccepting)` and `DPDARunAndAccept(..., isAccepting)`. For **nested-structure DPDAs** (e.g. compiled from Vistra), full acceptance should require both an accepting state and stack depth 1 (only BOS remains); use `DPDAIsAcceptingStateAndStackDepthOne(dpda, state, isAccepting)` after a run.
-
-**Example:**
-
-```go
-// Input alphabet (e.g. tokens), stack alphabet (e.g. bracket types), and indexer
-inputAlphabet := []autarch.SymbolDefinition[Token]{ ... }
-stackAlphabet := []autarch.SymbolDefinition[Bracket]{ ... }
-indexer := autarch.SymbolIndexerBuild(inputAlphabet)
-
-// Transitions: (currentState, inputSymbol, stackTop) -> (nextState, stack op). BOS is stack symbol 0.
-transitions := []autarch.DPDATransition[Token, Bracket]{
-    {CurrentState: 0, InputSymbol: openSym, CurrentStackTop: bottomSym, NextState: 1, Operation: autarch.StackOperation[Bracket]{Kind: autarch.Push, StackSymbol: bracketSym}},
-    {CurrentState: 1, InputSymbol: closeSym, CurrentStackTop: bracketSym, NextState: 1, Operation: autarch.StackOperation[Bracket]{Kind: autarch.Pop}},
-    // ...
-}
-outcomes := []Outcome{ ... }
-
-// BOS symbol ID (e.g. 0) must be a valid index into stackAlphabet; stack always contains at least BOS
-dpda, err := autarch.DPDACreate(allocFn, inputAlphabet, stackAlphabet, 0 /* BOS symbol ID */, transitions, outcomes, indexer)
-state := autarch.DPDAStateCreate(dpda, scratchAllocFn, 8)
-
-for _, tok := range tokens {
-    nextState, err := autarch.DPDAStep(dpda, state, tok)
-    if err != nil { ... }
-    // Optional: autarch.DPDACurrentStackTop(dpda, state), or use DPDATryStep / DPDARun / DPDARunAndAccept
-}
 ```
 
 ### Outcome Resolution
@@ -351,7 +291,6 @@ The `RegulaCompileToNFA` function compiles a pattern AST into an NFA:
 - **Lexical Analysis**: Building tokenizers that recognize keywords, identifiers, numbers, etc.
 - **Pattern Matching**: Implementing regular expression engines and string matching
 - **Language Recognition**: Validating input against formal language specifications
-- **Context-Free Parsing**: Using DPDA for bracket matching, nested blocks, and grammar-driven recognition
 - **Protocol Parsing**: Recognizing structured data formats and protocols
 - **Text Processing**: Finding and extracting patterns from text streams
 
@@ -372,8 +311,6 @@ The `RegulaCompileToNFA` function compiles a pattern AST into an NFA:
 6. **DFA Determinism**: DFAs must have exactly one transition per state-symbol pair. `DFACreate` panics if duplicates are found.
 
 7. **Epsilon Transitions**: Epsilon transitions are only valid in NFAs. They are eliminated during NFA-to-DFA conversion.
-
-8. **DPDA Determinism**: The indexer must return exactly one symbol per observation; otherwise `DPDAStep` errors or panics. Every (currentState, inputSymbol, stackTop) encountered during stepping must have a transition (or use `DPDATryStep` for non-panicking behavior). The **bottom-of-stack (BOS)** symbol ID must be valid at create; the stack always contains at least BOS. Do not pop the last (BOS) element with `DPDAStackPopID`.
 
 ## Implementation Notes
 

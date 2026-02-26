@@ -96,7 +96,7 @@ func symbolCollectorAddClass[TObs any](c *symbolCollector[TObs], cls charClass[T
 
 /*
 symbolFeeder is the interface used to feed literals and classes into the shared compilation context
-without exposing the concrete collector. Regula and Vistra collect/bind functions take a symbolFeeder
+without exposing the concrete collector. Regula collect/bind functions take a symbolFeeder
 so the same context can be used for either AST type.
 */
 type symbolFeeder[TObs any] interface {
