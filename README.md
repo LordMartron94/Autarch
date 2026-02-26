@@ -176,7 +176,7 @@ Deterministic Pushdown Automaton with a stack for context-free parsing and neste
 - `DPDANumStates`, `DPDAInputAlphabet`, `DPDAStackAlphabet`, `DPDAOutcome`, `DPDAIsAccepting` - Metadata and acceptance
 - `DPDAIsAcceptingStateAndStackDepthOne` - Accepting state and stack depth 1 (for nested DPDAs)
 - `DPDAAvailableInputs` - Input symbol IDs with a transition from (q, stackTopID) (diagnostics)
-- `DPDADebugPrint`, `DPDAValidate` - Diagnostics
+- `DPDADebugPrint`, `DPDADebugFormatter`, `DPDAValidate` - Diagnostics (human-readable dump with optional formatter; per-state transition table stack × input → next state, op)
 - `DPDARun` - Reset state, step through observations; returns finalState, ok, err
 - `DPDARunAndAccept` - Run then return isAccepting(outcome) for final state
 

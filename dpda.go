@@ -650,23 +650,135 @@ func DPDAAvailableInputs[TObservation, TStackSymbol, TStateOutcome any](
 
 /*
 DPDADebugFormatter provides optional formatting for DPDA debug output (symbol names, state IDs, outcomes, stack op kind).
+
+Each formatting function is optional (nil means use default formatting). FormatStateIndicator
+returns the single character shown in [ ] for each state (e.g. "A" for accepting, " " for normal).
+Only the first rune is used. FormatInputSymbolID and FormatStackSymbolID control table column/row
+labels; MaxCellWidth caps transition cell width (0 = default).
+
+Use cases:
+- Debugging DPDA construction and transition correctness
+- Human-readable symbol names (e.g. rune to character, token IDs to names)
+- Aligning transition tables with fixed-width symbol/state IDs
+
+Time complexity: O(1) per formatting call
+Space complexity: O(1) per formatting call
+
+Prerequisites:
+- Formatting functions should be fast and avoid allocations in hot paths
+
+Edge cases:
+- Nil formatter or nil formatter fields fall back to default formatting
 */
 type DPDADebugFormatter[TObservation, TStackSymbol, TStateOutcome any] struct {
 	FormatInputSymbolName func(id uint64, def SymbolDefinition[TObservation]) string
 	FormatStackSymbolName func(id uint64, def SymbolDefinition[TStackSymbol]) string
 	FormatStateOutcome    func(outcome TStateOutcome) string
 	FormatStateID         func(stateID uint64) string
+	FormatInputSymbolID   func(symbolID uint64) string
+	FormatStackSymbolID   func(symbolID uint64) string
 	FormatOpKind          func(kind StackOperationKind) string
+
+	// FormatStateIndicator returns the single-character indicator shown in [ ] for this state.
+	// E.g. "A" for accepting, " " for normal. If nil, no bracket column is shown. Only the first rune is used.
+	FormatStateIndicator func(state uint64, outcome TStateOutcome) string
+
+	// MaxCellWidth caps rendered transition cell width. If 0, a default is used.
+	MaxCellWidth int
 }
 
 /*
-DPDADebugPrint generates a human-readable string representation of the DPDA (alphabets, state outcomes, transitions).
+DPDADebugPrint generates a human-readable string representation of the DPDA.
+
+The output includes input alphabet, stack alphabet (with BOS marked), state outcomes,
+and for each state a transition table: rows = stack top symbol, columns = input symbol,
+cells = next state and stack operation (e.g. "3 Push(1)", "2 Pop", "—" when no transition).
+Layout is deterministic and aligned for scanning.
+
+Use cases:
+- Debugging automaton construction
+- Verifying transition correctness
+- Understanding DPDA structure and stack behavior
+
+Time complexity: O(s * i * k) where s = states, i = input alphabet size, k = stack alphabet size
+Space complexity: O(s * i * k) for cell buffers and string building
+
+Prerequisites:
+- dpda must be a valid DPDA instance
+
+Edge cases:
+- Handles empty alphabets and state sets gracefully
+- If formatter is nil, uses default formatting (backward compatible)
+- States with no transitions show an empty table or header only
 */
 func DPDADebugPrint[TObservation, TStackSymbol, TStateOutcome any](
 	dpda *DPDA[TObservation, TStackSymbol, TStateOutcome],
 	formatter *DPDADebugFormatter[TObservation, TStackSymbol, TStateOutcome],
 ) string {
 	var sb strings.Builder
+
+	inputSize := uint64(len(dpda.inputAlphabet))
+	stackSize := uint64(len(dpda.stackAlphabet))
+	maxStateW := 5
+	maxInputW := 3
+	maxStackW := 3
+	maxCellW := 24
+	if formatter != nil && formatter.MaxCellWidth > 0 {
+		maxCellW = formatter.MaxCellWidth
+	}
+
+	stateStrings := make([]string, dpda.numStates)
+	for s := uint64(0); s < dpda.numStates; s++ {
+		if formatter != nil && formatter.FormatStateID != nil {
+			stateStrings[s] = formatter.FormatStateID(s)
+		} else {
+			stateStrings[s] = fmt.Sprintf("%d", s)
+		}
+		if len(stateStrings[s]) > maxStateW {
+			maxStateW = len(stateStrings[s])
+		}
+	}
+
+	inputIDStrings := make([]string, inputSize)
+	for id := uint64(0); id < inputSize; id++ {
+		if formatter != nil && formatter.FormatInputSymbolID != nil {
+			inputIDStrings[id] = formatter.FormatInputSymbolID(id)
+		} else {
+			inputIDStrings[id] = fmt.Sprintf("%d", id)
+		}
+		if len(inputIDStrings[id]) > maxInputW {
+			maxInputW = len(inputIDStrings[id])
+		}
+	}
+
+	stackIDStrings := make([]string, stackSize)
+	for id := uint64(0); id < stackSize; id++ {
+		if formatter != nil && formatter.FormatStackSymbolID != nil {
+			stackIDStrings[id] = formatter.FormatStackSymbolID(id)
+		} else {
+			stackIDStrings[id] = fmt.Sprintf("%d", id)
+		}
+		if len(stackIDStrings[id]) > maxStackW {
+			maxStackW = len(stackIDStrings[id])
+		}
+	}
+
+	hasStateIndicator := formatter != nil && formatter.FormatStateIndicator != nil
+	stateIndicators := make([]string, dpda.numStates)
+	if hasStateIndicator {
+		for s := uint64(0); s < dpda.numStates; s++ {
+			outcome, _ := DPDAOutcome(dpda, s)
+			ind := formatter.FormatStateIndicator(s, outcome)
+			for _, r := range ind {
+				stateIndicators[s] = string(r)
+				break
+			}
+			if stateIndicators[s] == "" {
+				stateIndicators[s] = " "
+			}
+		}
+	}
+
 	sb.WriteString("DPDA Debug Print\n")
 	sb.WriteString("=============================\n\n")
 
@@ -676,7 +788,7 @@ func DPDADebugPrint[TObservation, TStackSymbol, TStateOutcome any](
 		if formatter != nil && formatter.FormatInputSymbolName != nil {
 			name = formatter.FormatInputSymbolName(uint64(id), def)
 		}
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", id, name))
+		sb.WriteString(fmt.Sprintf("  %s → %s\n", inputIDStrings[id], name))
 	}
 	sb.WriteString("\nStack alphabet:\n")
 	for id, def := range dpda.stackAlphabet {
@@ -684,43 +796,127 @@ func DPDADebugPrint[TObservation, TStackSymbol, TStateOutcome any](
 		if formatter != nil && formatter.FormatStackSymbolName != nil {
 			name = formatter.FormatStackSymbolName(uint64(id), def)
 		}
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", id, name))
+		mark := ""
+		if uint64(id) == dpda.bottomStackSymbolID {
+			mark = " (BOS)"
+		}
+		sb.WriteString(fmt.Sprintf("  %s → %s%s\n", stackIDStrings[id], name, mark))
 	}
 	sb.WriteString(fmt.Sprintf("\nBOS symbol ID: %d\n\n", dpda.bottomStackSymbolID))
 
 	sb.WriteString("States (outcome):\n")
+	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dpda.outcomes)
 	for s := uint64(0); s < dpda.numStates; s++ {
-		outcome, _ := DPDAOutcome(dpda, s)
+		outcome := *outCur.PtrAt(s)
 		outStr := fmt.Sprintf("%v", outcome)
 		if formatter != nil && formatter.FormatStateOutcome != nil {
 			outStr = formatter.FormatStateOutcome(outcome)
 		}
-		stateStr := fmt.Sprintf("%d", s)
-		if formatter != nil && formatter.FormatStateID != nil {
-			stateStr = formatter.FormatStateID(s)
+		if hasStateIndicator {
+			sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", stateIndicators[s], maxStateW, stateStrings[s], outStr))
+		} else {
+			sb.WriteString(fmt.Sprintf("  state %*s → %s\n", maxStateW, stateStrings[s], outStr))
 		}
-		sb.WriteString(fmt.Sprintf("  %s → %s\n", stateStr, outStr))
 	}
-	sb.WriteString("\nTransitions:\n")
+	sb.WriteString("\n")
+
+	sb.WriteString("Transitions (per state: stack × input → next state, op):\n")
 	for q := uint64(0); q < dpda.numStates; q++ {
 		descriptor := dpda.transitions[q]
 		if descriptor == nil {
+			sb.WriteString(fmt.Sprintf("\nState %s: (no grid)\n", stateStrings[q]))
 			continue
 		}
-		extension.DenseLocalGridPooledIterateValid(dpda.pooledGrid, descriptor, func(xID, yID uint64, val transitionValue) bool {
-			opStr := fmt.Sprintf("%v", val.opKind)
-			if formatter != nil && formatter.FormatOpKind != nil {
-				opStr = formatter.FormatOpKind(val.opKind)
+
+		cells := make([][]string, stackSize)
+		for st := uint64(0); st < stackSize; st++ {
+			cells[st] = make([]string, inputSize)
+			for in := uint64(0); in < inputSize; in++ {
+				res, ok := DPDATransitionGet(dpda, q, in, st)
+				if !ok {
+					cells[st][in] = "—"
+					continue
+				}
+				cell := dpdaDebugFormatCell(stateStrings, res.NextState, res.OpKind, res.PushOrReplaceSymbolID, stackIDStrings, formatter)
+				cell = dpdaDebugTruncateCell(cell, maxCellW)
+				cells[st][in] = cell
 			}
-			sb.WriteString(fmt.Sprintf("  (%d, %d, %d) → state %d, %s", q, xID, yID, val.nextState, opStr))
-			if val.opKind == Push || val.opKind == Replace {
-				sb.WriteString(fmt.Sprintf(" %d", val.symbolID))
+		}
+
+		leadW := maxStackW + 4
+		if hasStateIndicator {
+			leadW += 3
+		}
+		sb.WriteString(fmt.Sprintf("\nState %s:\n", stateStrings[q]))
+
+		sb.WriteString(strings.Repeat(" ", leadW) + "|")
+		for in := uint64(0); in < inputSize; in++ {
+			sb.WriteString(fmt.Sprintf(" %*s ", maxCellW, inputIDStrings[in]))
+		}
+		sb.WriteString("\n")
+
+		sb.WriteString(strings.Repeat("-", leadW) + "+")
+		for in := uint64(0); in < inputSize; in++ {
+			sb.WriteString(strings.Repeat("-", maxCellW+2))
+		}
+		sb.WriteString("\n")
+
+		for st := uint64(0); st < stackSize; st++ {
+			sb.WriteString(fmt.Sprintf("  %*s |", maxStackW, stackIDStrings[st]))
+			for in := uint64(0); in < inputSize; in++ {
+				c := cells[st][in]
+				if len(c) > maxCellW {
+					c = dpdaDebugTruncateCell(c, maxCellW)
+				}
+				sb.WriteString(fmt.Sprintf(" %*s ", maxCellW, c))
 			}
 			sb.WriteString("\n")
-			return true
-		})
+		}
 	}
 	return sb.String()
+}
+
+func dpdaDebugFormatCell[TObservation, TStackSymbol, TStateOutcome any](
+	stateStrings []string,
+	nextState uint64,
+	opKind StackOperationKind,
+	pushOrReplaceID uint64,
+	stackIDStrings []string,
+	formatter *DPDADebugFormatter[TObservation, TStackSymbol, TStateOutcome],
+) string {
+	nextStr := fmt.Sprintf("%d", nextState)
+	if nextState < uint64(len(stateStrings)) {
+		nextStr = stateStrings[nextState]
+	}
+	opStr := fmt.Sprintf("%v", opKind)
+	if formatter != nil && formatter.FormatOpKind != nil {
+		opStr = formatter.FormatOpKind(opKind)
+	}
+	switch opKind {
+	case Push, Replace:
+		symStr := fmt.Sprintf("%d", pushOrReplaceID)
+		if pushOrReplaceID < uint64(len(stackIDStrings)) {
+			symStr = stackIDStrings[pushOrReplaceID]
+		}
+		return nextStr + " " + opStr + "(" + symStr + ")"
+	case Pop, NoOp:
+		return nextStr + " " + opStr
+	default:
+		return nextStr + " " + opStr
+	}
+}
+
+func dpdaDebugTruncateCell(s string, max int) string {
+	if max <= 0 {
+		max = 24
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	return s[:max-1] + "…"
 }
 
 /*
