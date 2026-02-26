@@ -174,12 +174,13 @@ Deterministic Pushdown Automaton with a stack for context-free parsing and neste
 - `DPDACurrentStackTop` - Stack-alphabet symbol at top of stack
 - `DPDAStackTopID`, `DPDAStackDepth`, `DPDAStackClearToBottom`, `DPDAStackPushID`, `DPDAStackPopID` - Stack accessors
 - `DPDANumStates`, `DPDAInputAlphabet`, `DPDAStackAlphabet`, `DPDAOutcome`, `DPDAIsAccepting` - Metadata and acceptance
+- `DPDAIsAcceptingStateAndStackDepthOne` - Accepting state and stack depth 1 (for nested DPDAs)
 - `DPDAAvailableInputs` - Input symbol IDs with a transition from (q, stackTopID) (diagnostics)
 - `DPDADebugPrint`, `DPDAValidate` - Diagnostics
 - `DPDARun` - Reset state, step through observations; returns finalState, ok, err
 - `DPDARunAndAccept` - Run then return isAccepting(outcome) for final state
 
-**Acceptance** is client-defined via a callback: `DPDAIsAccepting(dpda, stateID, isAccepting)` and `DPDARunAndAccept(..., isAccepting)`.
+**Acceptance** is client-defined via a callback: `DPDAIsAccepting(dpda, stateID, isAccepting)` and `DPDARunAndAccept(..., isAccepting)`. For **nested-structure DPDAs** (e.g. compiled from Vistra), full acceptance should require both an accepting state and stack depth 1 (only BOS remains); use `DPDAIsAcceptingStateAndStackDepthOne(dpda, state, isAccepting)` after a run.
 
 **Example:**
 

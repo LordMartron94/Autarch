@@ -120,7 +120,7 @@ Shared Compilation Context
 ────────────────────────────────────────────────────────────
 
 All patterns in the instruction batch are compiled under a single
-RegulaSharedCompilationContext.
+SharedCompilationContext.
 
 The context is responsible for:
 
@@ -240,8 +240,8 @@ must be performed upstream.
 */
 func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
-	instructions []RegulaNFAInstruction[TObs, TOutcome],
-	ctx *RegulaSharedCompilationContext[TObs],
+	instructions []PatternCompilationInstruction[TObs, TOutcome, RegulaAST[TObs]],
+	ctx *SharedCompilationContext[TObs, RegulaAST[TObs]],
 	nonTerminalOutcome TOutcome,
 ) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 
@@ -257,7 +257,15 @@ func RegulaCompileToNFAGlushkov[TObs any, TOutcome comparable](
 		patterns[i] = normalized
 	}
 
-	ctx.fullPrepare(patterns)
+	var nextPos positionID
+	ctx.fullPrepare(
+		patterns,
+		regulaCollectSymbols[TObs],
+		func(p *RegulaAST[TObs], feeder symbolFeeder[TObs], bindState interface{}) {
+			regulaBindIDs(p, feeder, bindState.(*positionID))
+		},
+		&nextPos,
+	)
 
 	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(instructions))
 
@@ -386,7 +394,7 @@ func computeConcatInfo[TObs any](n *RegulaAST[TObs], follow []positionSet, maxPo
 
 func buildGlushkovNFA[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
-	ctx *RegulaSharedCompilationContext[TObs],
+	ctx *SharedCompilationContext[TObs, RegulaAST[TObs]],
 	pm posMetadataMap,
 	follow []positionSet,
 	info glushkovInfo,

@@ -46,7 +46,11 @@ func newSymbolCollector[TObs any](
 	}
 }
 
-func (c *symbolCollector[TObs]) literal(v TObs) logicalID {
+/*
+symbolCollectorAddLiteral registers a single literal observation and returns its logical symbol ID.
+Duplicate literals receive the same ID. Call this when walking an AST to feed symbol requests.
+*/
+func symbolCollectorAddLiteral[TObs any](c *symbolCollector[TObs], v TObs) logicalID {
 	h := hashValue(v, c.formatter.toBytesSingle)
 	key := autarch.SymbolKey{Kind: autarch.SymbolKindLiteral, Hash: h}
 
@@ -66,7 +70,11 @@ func (c *symbolCollector[TObs]) literal(v TObs) logicalID {
 	return id
 }
 
-func (c *symbolCollector[TObs]) class(cls charClass[TObs]) logicalID {
+/*
+symbolCollectorAddClass registers a character class and returns its logical symbol ID.
+Duplicate classes (by range set) receive the same ID. Call this when walking an AST to feed symbol requests.
+*/
+func symbolCollectorAddClass[TObs any](c *symbolCollector[TObs], cls charClass[TObs]) logicalID {
 	h := hashRanges(cls.ranges, c.formatter.ToBytes)
 	key := autarch.SymbolKey{Kind: autarch.SymbolKindClass, Hash: h}
 
@@ -86,27 +94,22 @@ func (c *symbolCollector[TObs]) class(cls charClass[TObs]) logicalID {
 	return id
 }
 
-func (c *symbolCollector[TObs]) collect(n *RegulaAST[TObs]) {
-	if n == nil {
-		return
-	}
+/*
+symbolFeeder is the interface used to feed literals and classes into the shared compilation context
+without exposing the concrete collector. Regula and Vistra collect/bind functions take a symbolFeeder
+so the same context can be used for either AST type.
+*/
+type symbolFeeder[TObs any] interface {
+	addLiteral(v TObs) logicalID
+	addClass(cls charClass[TObs]) logicalID
+}
 
-	switch n.kind {
-	case EXPRESSION_LITERAL:
-		for _, v := range n.literals {
-			c.literal(v)
-		}
+func (c *symbolCollector[TObs]) addLiteral(v TObs) logicalID {
+	return symbolCollectorAddLiteral(c, v)
+}
 
-	case EXPRESSION_CLASS:
-		c.class(n.class)
-
-	case EXPRESSION_CONCAT, EXPRESSION_UNION:
-		c.collect(n.left)
-		c.collect(n.right)
-
-	case EXPRESSION_REPEAT:
-		c.collect(n.sub)
-	}
+func (c *symbolCollector[TObs]) addClass(cls charClass[TObs]) logicalID {
+	return symbolCollectorAddClass(c, cls)
 }
 
 // ------------------------------------------------------- ALPHABET PARTITIONER
@@ -233,49 +236,6 @@ func buildAlphabet[TObs any](
 	return alphabetBuildResult[TObs]{
 		Definitions: defs,
 		Mapping:     mapping,
-	}
-}
-
-func bindIDs[TObs any](
-	n *RegulaAST[TObs],
-	c *symbolCollector[TObs],
-	nextPos *positionID,
-) {
-	if n == nil {
-		return
-	}
-
-	switch n.kind {
-
-	case EXPRESSION_LITERAL:
-		l := len(n.literals)
-
-		n.literalSymIDs = make([]logicalID, l)
-		n.literalPosIDs = make([]positionID, l)
-
-		for i, v := range n.literals {
-			n.literalSymIDs[i] = c.literal(v)
-
-			*nextPos++
-			n.literalPosIDs[i] = *nextPos
-		}
-
-		n.literalBound = true
-
-	case EXPRESSION_CLASS:
-		n.classSymID = c.class(n.class)
-
-		*nextPos++
-		n.classPosID = *nextPos
-
-		n.classBound = true
-
-	case EXPRESSION_CONCAT, EXPRESSION_UNION:
-		bindIDs(n.left, c, nextPos)
-		bindIDs(n.right, c, nextPos)
-
-	case EXPRESSION_REPEAT:
-		bindIDs(n.sub, c, nextPos)
 	}
 }
 

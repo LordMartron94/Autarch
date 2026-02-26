@@ -85,8 +85,8 @@ Compilation is linear in:
 */
 func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
-	instructions []RegulaNFAInstruction[TObs, TOutcome],
-	ctx *RegulaSharedCompilationContext[TObs],
+	instructions []PatternCompilationInstruction[TObs, TOutcome, RegulaAST[TObs]],
+	ctx *SharedCompilationContext[TObs, RegulaAST[TObs]],
 	nonTerminalOutcome TOutcome,
 ) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error) {
 	if len(instructions) == 0 {
@@ -98,7 +98,15 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 		patterns[i] = instructions[i].Pattern
 	}
 
-	ctx.fullPrepare(patterns)
+	var nextPos positionID
+	ctx.fullPrepare(
+		patterns,
+		regulaCollectSymbols[TObs],
+		func(p *RegulaAST[TObs], feeder symbolFeeder[TObs], bindState interface{}) {
+			regulaBindIDs(p, feeder, bindState.(*positionID))
+		},
+		&nextPos,
+	)
 
 	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(patterns))
 

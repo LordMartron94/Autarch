@@ -3,50 +3,12 @@ package pattern
 import (
 	"autarch"
 	"foundation/hash"
-	"memarch"
 )
 
 /* AnnotatedOutcome represents an outcome mapped with annotation ID. */
 type AnnotatedOutcome[TOutcome any] struct {
 	Value      TOutcome
 	Annotation *AnnotationID
-}
-
-/* RegulaToNFACompiler is an abstraction that provides the API boundary for compiling a RegulaAST into NFAs. */
-type RegulaToNFACompiler[TObs any, TOutcome comparable] func(
-	alloc memarch.AllocationFn,
-	instructions []RegulaNFAInstruction[TObs, TOutcome],
-	ctx *RegulaSharedCompilationContext[TObs],
-	nonTerminalOutcome TOutcome,
-) ([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], error)
-
-/*
-RegulaNFAInstruction represents a single pattern compilation request.
-
-Each instruction pairs a Regula AST with the semantic outcome that should be
-produced when the resulting NFA accepts.
-
-Instructions are compiled together in a single shared compilation context,
-ensuring:
-
-  - one unified alphabet
-  - stable logical and physical symbol IDs
-  - consistent indexing across all generated NFAs
-
-This batching model is required for lexer construction, where multiple token
-patterns must operate over the same symbol space.
-*/
-type RegulaNFAInstruction[TObservation any, TOutcome comparable] struct {
-	/*
-		Pattern is the Regula AST describing the pattern to compile.
-	*/
-	Pattern *RegulaAST[TObservation]
-
-	/*
-		Outcome is the semantic value associated with the accepting state
-		of the compiled NFA (e.g. token type, rule ID, payload, etc.).
-	*/
-	Outcome TOutcome
 }
 
 /*
@@ -59,19 +21,48 @@ If this returns a value equal to 'next', the interval (curr, next) is considered
 type SuccessorFn[T any] func(curr T) (next T, exists bool)
 
 /*
-RegulaSharedCompilationContext represents a shared compilation context for multiple patterns.
-This allows multiple patterns to be compiled with consistent symbol IDs, which is required
-for proper lexer compilation where all rules in a state must share one alphabet.
+PatternCompilationInstruction represents a single pattern compilation request.
+
+Each instruction pairs an AST with the semantic outcome that should be
+produced when the resulting NFA accepts.
+
+Instructions are compiled together in a single shared compilation context,
+ensuring:
+
+  - one unified alphabet
+  - stable logical and physical symbol IDs
+  - consistent indexing across all generated NFAs
+
+This batching model is required for lexer construction, where multiple token
+patterns must operate over the same symbol space.
+*/
+type PatternCompilationInstruction[TObservation, TOutcome, TPattern any] struct {
+	/*
+		Pattern is the AST describing the pattern to compile.
+	*/
+	Pattern *TPattern
+
+	/*
+		Outcome is the semantic value associated with the accepting state
+		of the compiled pattern (e.g. token type, rule ID, payload, etc.).
+	*/
+	Outcome TOutcome
+}
+
+/*
+SharedCompilationContext is a node-agnostic compilation context for pattern compilation.
+
+It holds the unified symbol collector, alphabet, expander, and indexer. TPattern is the AST type
+you will prepare (e.g. *RegulaAST[TObs] for Regula, *VistraAST[TObs] for Vistra). Compilers call
+ctx.fullPrepare(patterns, collectSymbols, bindIDs, bindState) with pattern-specific callbacks.
+Create the context with the same TPattern as the compiler (e.g. CreateSharedCompilationContext[TObs, *RegulaAST[TObs]](...) for Regula).
 
 Use cases:
-- Compiling multiple patterns with shared symbol IDs for lexer rulesets
+- Compiling multiple Regula or Vistra patterns with shared symbol IDs
 - Building lexers where all rules in a state share one alphabet
-- Ensuring symbol coherence across multiple pattern compilations
-
-The context should be created once per lexer state, then used to compile all patterns
-in that state.
+- Reusing one context for mixed or future AST types
 */
-type RegulaSharedCompilationContext[TObs any] struct {
+type SharedCompilationContext[TObs, TPattern any] struct {
 	successorFn SuccessorFn[TObs]
 	cmpFn       func(a, b TObs) int
 
@@ -83,30 +74,16 @@ type RegulaSharedCompilationContext[TObs any] struct {
 }
 
 /*
-RegulaCreateSharedCompilationContext creates a shared compilation context for multiple patterns.
-All patterns should be collected into this context before building the alphabet, then each
-pattern can be compiled using RegulaCompileToNFAWithBuilder.
-
-Use cases:
-- Setting up lexer state compilation with shared symbols
-- Preparing context for compiling multiple patterns with consistent symbol IDs
-
-Time complexity: O(1) - just creates the context
-Space complexity: O(1) - context structure only
-
-Prerequisites:
-- None (empty context)
-
-Edge cases:
-- Context must have patterns collected before building alphabet
-- Alphabet should be built once after all patterns are collected
+CreateSharedCompilationContext creates an empty shared compilation context.
+TPattern must match the AST type you will pass to fullPrepare (e.g. *RegulaAST[TObs] for Regula).
+Compilers then call ctx.fullPrepare(patterns, collectSymbols, bindIDs, bindState) with the appropriate callbacks.
 */
-func RegulaCreateSharedCompilationContext[TObservation any](
+func CreateSharedCompilationContext[TObservation, TPattern any](
 	successorFn SuccessorFn[TObservation],
 	cmpFn func(a, b TObservation) int,
 	formatter ObservationFormatter[TObservation],
-) *RegulaSharedCompilationContext[TObservation] {
-	return &RegulaSharedCompilationContext[TObservation]{
+) *SharedCompilationContext[TObservation, TPattern] {
+	return &SharedCompilationContext[TObservation, TPattern]{
 		successorFn: successorFn,
 		cmpFn:       cmpFn,
 		collector:   newSymbolCollector(formatter),
@@ -114,48 +91,18 @@ func RegulaCreateSharedCompilationContext[TObservation any](
 }
 
 /*
-CollectPattern collects symbols from a pattern AST into the shared context.
-This should be called for all patterns before building the alphabet.
-
-Use cases:
-- Collecting symbols from multiple patterns into shared context
-- Preparing for unified alphabet construction
-
-Time complexity: O(n) where n is nodes in the AST
-Space complexity: O(s) where s is unique symbols collected
-
-Prerequisites:
-- context must be a valid shared compilation context
-- pattern must be a valid RegulaAST
-
-Edge cases:
-- Can be called multiple times for different patterns
-- Symbols are deduplicated automatically
+getCollector returns the symbol feeder for this context. Pass it to AST-specific collect and bind
+functions (e.g. regulaCollectSymbols, regulaBindIDs, VistraCollectSymbols, VistraBindIDs).
 */
-func (ctx *RegulaSharedCompilationContext[TObservation]) collectPattern(pattern *RegulaAST[TObservation]) {
-	ctx.collector.collect(pattern)
+func (ctx *SharedCompilationContext[TObs, TPattern]) getCollector() symbolFeeder[TObs] {
+	return ctx.collector
 }
 
 /*
-buildAlphabet builds the unified alphabet and indexer from all collected patterns.
-This should be called once after all patterns have been collected.
-
-Use cases:
-- Finalizing the shared alphabet after pattern collection
-- Preparing for pattern compilation with shared symbols
-
-Time complexity: O(s) where s is number of unique symbols
-Space complexity: O(s) for alphabet storage
-
-Prerequisites:
-- At least one pattern should have been collected
-- Should be called once after all CollectPattern calls
-
-Edge cases:
-- Empty alphabet if no patterns collected
-- Alphabet is deduplicated automatically
+buildAlphabet builds the unified alphabet and indexer from all symbols collected so far.
+Call once after all patterns have been fed via Collector(). Required before compiling any pattern.
 */
-func (ctx *RegulaSharedCompilationContext[TObs]) buildAlphabet() {
+func (ctx *SharedCompilationContext[TObs, TPattern]) buildAlphabet() {
 	result := buildAlphabet(
 		ctx.collector.reqs,
 		func(a, b TObs) bool {
@@ -169,20 +116,25 @@ func (ctx *RegulaSharedCompilationContext[TObs]) buildAlphabet() {
 	ctx.indexer = autarch.SymbolIndexerBuild(ctx.alphabet)
 }
 
-func (ctx *RegulaSharedCompilationContext[TObs]) bindIDs(pattern *RegulaAST[TObs]) {
-	var next positionID = 0
-	bindIDs(pattern, ctx.collector, &next)
-}
-
-func (ctx *RegulaSharedCompilationContext[TObs]) fullPrepare(patterns []*RegulaAST[TObs]) {
+/*
+fullPrepare collects symbols from all patterns, builds the alphabet, then binds IDs into each pattern.
+collectSymbols is called for each pattern with the context's feeder; then buildAlphabet runs once;
+then bindIDs is called for each pattern with the same feeder and shared bindState. Use bindState
+for AST-specific state (e.g. Regula passes *positionID so position IDs are unique across the batch).
+*/
+func (ctx *SharedCompilationContext[TObs, TPattern]) fullPrepare(
+	patterns []*TPattern,
+	collectSymbols func(pattern *TPattern, feeder symbolFeeder[TObs]),
+	bindIDs func(pattern *TPattern, feeder symbolFeeder[TObs], bindState interface{}),
+	bindState interface{},
+) {
+	feeder := ctx.getCollector()
 	for _, pattern := range patterns {
-		ctx.collectPattern(pattern)
+		collectSymbols(pattern, feeder)
 	}
-
 	ctx.buildAlphabet()
-
 	for _, pattern := range patterns {
-		ctx.bindIDs(pattern)
+		bindIDs(pattern, feeder, bindState)
 	}
 }
 

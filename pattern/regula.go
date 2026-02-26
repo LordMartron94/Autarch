@@ -499,6 +499,80 @@ func normalizeRanges[T any](
 	return out
 }
 
+// ------------------------------------------------------- REGULA SYMBOL COLLECTION & BINDING
+
+/*
+regulaCollectSymbols walks a Regula AST and feeds all literals and classes into the symbol feeder.
+Call this before building the alphabet so the collector's reqs are populated. AST-agnostic;
+the feeder is obtained from SharedCompilationContext.Collector().
+*/
+func regulaCollectSymbols[TObs any](n *RegulaAST[TObs], feeder symbolFeeder[TObs]) {
+	if n == nil {
+		return
+	}
+
+	switch n.kind {
+	case EXPRESSION_LITERAL:
+		for _, v := range n.literals {
+			feeder.addLiteral(v)
+		}
+
+	case EXPRESSION_CLASS:
+		feeder.addClass(n.class)
+
+	case EXPRESSION_CONCAT, EXPRESSION_UNION:
+		regulaCollectSymbols(n.left, feeder)
+		regulaCollectSymbols(n.right, feeder)
+
+	case EXPRESSION_REPEAT:
+		regulaCollectSymbols(n.sub, feeder)
+	}
+}
+
+/*
+regulaBindIDs walks a Regula AST and assigns logical symbol IDs and position IDs into each node.
+Uses the same feeder so logical IDs are stable and deduplicated. nextPos is incremented
+for each symbol occurrence and must be shared across the full tree walk.
+*/
+func regulaBindIDs[TObs any](n *RegulaAST[TObs], feeder symbolFeeder[TObs], nextPos *positionID) {
+	if n == nil {
+		return
+	}
+
+	switch n.kind {
+
+	case EXPRESSION_LITERAL:
+		l := len(n.literals)
+
+		n.literalSymIDs = make([]logicalID, l)
+		n.literalPosIDs = make([]positionID, l)
+
+		for i, v := range n.literals {
+			n.literalSymIDs[i] = feeder.addLiteral(v)
+
+			*nextPos++
+			n.literalPosIDs[i] = *nextPos
+		}
+
+		n.literalBound = true
+
+	case EXPRESSION_CLASS:
+		n.classSymID = feeder.addClass(n.class)
+
+		*nextPos++
+		n.classPosID = *nextPos
+
+		n.classBound = true
+
+	case EXPRESSION_CONCAT, EXPRESSION_UNION:
+		regulaBindIDs(n.left, feeder, nextPos)
+		regulaBindIDs(n.right, feeder, nextPos)
+
+	case EXPRESSION_REPEAT:
+		regulaBindIDs(n.sub, feeder, nextPos)
+	}
+}
+
 // -------------------------------------------------------------- TEMPLATES
 
 /*

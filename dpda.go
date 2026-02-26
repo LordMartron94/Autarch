@@ -213,6 +213,10 @@ func DPDACreate[TObservation, TStackSymbol, TStateOutcome any](
 		}
 	}
 
+	if n := uint64(len(outcomes)); n > numStates {
+		numStates = n
+	}
+
 	stateBuckets := make([][]extension.Combination[uint64, uint64, transitionValue], numStates)
 	for _, t := range transitions {
 		xID := t.InputSymbol.SymbolID
@@ -505,6 +509,22 @@ func DPDAIsAccepting[TObservation, TStackSymbol, TStateOutcome any](
 		return false
 	}
 	return isAccepting(outcome)
+}
+
+/*
+DPDAIsAcceptingStateAndStackDepthOne returns true iff the state is in an accepting outcome and the
+stack depth is 1 (only BOS remains). Use this for nested-structure DPDAs (e.g. from Vistra) where
+full acceptance requires both an accepting state and a closed stack.
+*/
+func DPDAIsAcceptingStateAndStackDepthOne[TObservation, TStackSymbol, TStateOutcome any](
+	dpda *DPDA[TObservation, TStackSymbol, TStateOutcome],
+	state *DPDAState,
+	isAccepting func(TStateOutcome) bool,
+) bool {
+	if memstruct.DynamicStackLengthGet(state.stack) != 1 {
+		return false
+	}
+	return DPDAIsAccepting(dpda, state.currentState, isAccepting)
 }
 
 /*
