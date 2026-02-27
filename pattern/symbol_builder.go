@@ -3,6 +3,7 @@ package pattern
 import (
 	"autarch"
 	"fmt"
+	"foundation/domain"
 	"slices"
 )
 
@@ -123,8 +124,7 @@ type alphabetBuildResult[TObs any] struct {
 
 func buildAlphabet[TObs any](
 	reqs []symbolRequest[TObs],
-	isLess func(a, b TObs) bool,
-	successor SuccessorFn[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
 ) alphabetBuildResult[TObs] {
 	mapping := make(map[logicalID][]physicalID)
 
@@ -140,16 +140,16 @@ func buildAlphabet[TObs any](
 	}
 
 	slices.SortFunc(points, func(a, b TObs) int {
-		if isLess(a, b) {
+		if observationDomain.LessThan(a, b) {
 			return -1
 		}
-		if isLess(b, a) {
+		if observationDomain.LessThan(b, a) {
 			return 1
 		}
 		return 0
 	})
 	points = slices.CompactFunc(points, func(a, b TObs) bool {
-		return !isLess(a, b) && !isLess(b, a)
+		return !observationDomain.LessThan(a, b) && !observationDomain.LessThan(b, a)
 	})
 
 	var defs []autarch.SymbolDefinition[TObs]
@@ -181,7 +181,7 @@ func buildAlphabet[TObs any](
 		var pointCover []logicalID
 		for _, r := range reqs {
 			for _, cr := range r.ranges {
-				if !isLess(val, cr.lo) && !isLess(cr.hi, val) {
+				if !observationDomain.LessThan(val, cr.lo) && !observationDomain.LessThan(cr.hi, val) {
 					pointCover = append(pointCover, r.id)
 					break
 				}
@@ -189,7 +189,7 @@ func buildAlphabet[TObs any](
 		}
 
 		addPhysical(
-			func(o TObs) bool { return !isLess(o, val) && !isLess(val, o) },
+			func(o TObs) bool { return !observationDomain.LessThan(o, val) && !observationDomain.LessThan(val, o) },
 			fmt.Sprintf("pt:%v", val),
 			nil,
 			nil,
@@ -202,17 +202,14 @@ func buildAlphabet[TObs any](
 
 		next := points[i+1]
 
-		if successor != nil {
-			if s, ok := successor(p); ok &&
-				!isLess(s, next) && !isLess(next, s) {
-				continue
-			}
+		if s, ok := observationDomain.NextFn(p); ok &&
+			!observationDomain.LessThan(s, next) && !observationDomain.LessThan(next, s) {
+			continue
 		}
-
 		var gapCover []logicalID
 		for _, r := range reqs {
 			for _, cr := range r.ranges {
-				if !isLess(p, cr.lo) && !isLess(cr.hi, next) {
+				if !observationDomain.LessThan(p, cr.lo) && !observationDomain.LessThan(cr.hi, next) {
 					gapCover = append(gapCover, r.id)
 					break
 				}
@@ -225,7 +222,7 @@ func buildAlphabet[TObs any](
 
 		lo, hi := p, next
 		addPhysical(
-			func(o TObs) bool { return isLess(lo, o) && isLess(o, hi) },
+			func(o TObs) bool { return observationDomain.LessThan(lo, o) && observationDomain.LessThan(o, hi) },
 			fmt.Sprintf("gap:(%v,%v)", lo, hi),
 			&lo,
 			&hi,

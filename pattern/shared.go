@@ -2,6 +2,7 @@ package pattern
 
 import (
 	"autarch"
+	"foundation/domain"
 	"foundation/hash"
 )
 
@@ -10,15 +11,6 @@ type AnnotatedOutcome[TOutcome any] struct {
 	Value      TOutcome
 	Annotation *AnnotationID
 }
-
-/*
-SuccessorFn defines how to get the next discrete value in the observation space.
-Example for rune: func(r rune) rune { return r + 1 }
-Example for float: return nil (or a fn that indicates no discrete successor)
-
-If this returns a value equal to 'next', the interval (curr, next) is considered empty.
-*/
-type SuccessorFn[T any] func(curr T) (next T, exists bool)
 
 /*
 PatternCompilationInstruction represents a single pattern compilation request.
@@ -63,8 +55,7 @@ Use cases:
 - Reusing one context for mixed or future AST types
 */
 type SharedCompilationContext[TObs, TPattern any] struct {
-	successorFn SuccessorFn[TObs]
-	cmpFn       func(a, b TObs) int
+	observationDomain *domain.DiscreteDomain[TObs]
 
 	collector *symbolCollector[TObs]
 
@@ -79,14 +70,12 @@ TPattern must match the AST type you will pass to fullPrepare (e.g. *RegulaAST[T
 Compilers then call ctx.fullPrepare(patterns, collectSymbols, bindIDs, bindState) with the appropriate callbacks.
 */
 func CreateSharedCompilationContext[TObservation, TPattern any](
-	successorFn SuccessorFn[TObservation],
-	cmpFn func(a, b TObservation) int,
+	observationDomain *domain.DiscreteDomain[TObservation],
 	formatter ObservationFormatter[TObservation],
 ) *SharedCompilationContext[TObservation, TPattern] {
 	return &SharedCompilationContext[TObservation, TPattern]{
-		successorFn: successorFn,
-		cmpFn:       cmpFn,
-		collector:   newSymbolCollector(formatter),
+		observationDomain: observationDomain,
+		collector:         newSymbolCollector(formatter),
 	}
 }
 
@@ -105,10 +94,7 @@ Call once after all patterns have been fed via Collector(). Required before comp
 func (ctx *SharedCompilationContext[TObs, TPattern]) buildAlphabet() {
 	result := buildAlphabet(
 		ctx.collector.reqs,
-		func(a, b TObs) bool {
-			return ctx.cmpFn(a, b) < 0
-		},
-		ctx.successorFn,
+		ctx.observationDomain,
 	)
 
 	ctx.alphabet = result.Definitions

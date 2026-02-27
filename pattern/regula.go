@@ -1,6 +1,7 @@
 package pattern
 
 import (
+	"foundation/domain"
 	"slices"
 )
 
@@ -237,15 +238,15 @@ func (r RegulaAST[TObservation]) Repeat(min, max int) RegulaAST[TObservation] {
 
 /* RegulaASTFactory encapsulates the factory for constructing Regula AST. */
 type RegulaASTFactory[TObservation any] struct {
-	cmpFn func(a, b TObservation) int
+	observationDomain *domain.DiscreteDomain[TObservation]
 }
 
-/* RegulaASTFactoryCreate constructs a regula AST factory. */
+/* RegulaASTFactoryCreate constructs a regula AST factory from a discrete observation domain. */
 func RegulaASTFactoryCreate[TObservation any](
-	cmpFn func(a, b TObservation) int,
+	observationDomain *domain.DiscreteDomain[TObservation],
 ) *RegulaASTFactory[TObservation] {
 	return &RegulaASTFactory[TObservation]{
-		cmpFn: cmpFn,
+		observationDomain: observationDomain,
 	}
 }
 
@@ -390,11 +391,76 @@ Edge cases:
 - The resulting pattern maintains normalized ranges internally
 */
 func (r *RegulaASTFactory[TObservation]) Class(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
-	normalized := normalizeRanges(ranges, r.cmpFn)
+	normalized := normalizeRanges(ranges, r.observationDomain.OrderingCmp)
 	return RegulaAST[TObservation]{
 		kind:  EXPRESSION_CLASS,
 		class: charClass[TObservation]{ranges: normalized},
 	}
+}
+
+/*
+NegatedClass creates a character class that matches any single observation outside the provided ranges.
+
+The result is the complement of the given ranges within the factory's DiscreteDomain: it matches
+any observation in [Min, Max] that does not fall inside any of the input ranges. Input ranges are
+normalized (sorted and merged), then inverted into one or more gaps between currentPos and the
+domain ceiling, using the domain's OrderingCmp and NextFn/PreviousFn.
+
+Use cases:
+- "Any character except these" (e.g. not a quote, not a delimiter)
+- Building negated character classes (regex-style [^0-9], [^a-z])
+- Matching single observations outside a known set for lexers and parsers
+
+Time complexity: O(n log n) where n is the number of ranges (normalize then linear pass to invert).
+Space complexity: O(n) - stores the inverted range list.
+
+Prerequisites:
+- The factory must have a non-nil DiscreteDomain with valid Min, Max, OrderingCmp, NextFn, PreviousFn.
+
+Edge cases:
+- Empty ranges list: matches the entire domain (inverted is the single range [Min, Max]).
+- Ranges covering the whole domain: inverted is empty; the resulting pattern never matches a single observation.
+- Overlapping or unsorted ranges are normalized before inversion.
+*/
+func (r *RegulaASTFactory[TObservation]) NegatedClass(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
+	normalized := normalizeRanges(ranges, r.observationDomain.OrderingCmp)
+	inverted := r.invertRanges(normalized)
+
+	return RegulaAST[TObservation]{
+		kind:  EXPRESSION_CLASS,
+		class: charClass[TObservation]{ranges: inverted},
+	}
+}
+
+func (r *RegulaASTFactory[TObservation]) invertRanges(normalized []charRange[TObservation]) []charRange[TObservation] {
+	d := r.observationDomain
+	var inverted []charRange[TObservation]
+
+	// Start at the absolute floor of the domain
+	currentPos := d.Min
+
+	for _, gap := range normalized {
+		// If there is space between currentPos and the start of the range, that's a match
+		if d.OrderingCmp(currentPos, gap.lo) < 0 {
+			prev, _ := d.PreviousFn(gap.lo)
+			inverted = append(inverted, charRange[TObservation]{lo: currentPos, hi: prev})
+		}
+
+		// Move currentPos to the first valid observation AFTER this range
+		next, exists := d.NextFn(gap.hi)
+		if !exists {
+			// We've hit the end of the domain (gap.hi was d.Max)
+			return inverted
+		}
+		currentPos = next
+	}
+
+	// Final check: Is there a gap between the last range and d.Max?
+	if d.OrderingCmp(currentPos, d.Max) <= 0 {
+		inverted = append(inverted, charRange[TObservation]{lo: currentPos, hi: d.Max})
+	}
+
+	return inverted
 }
 
 /*
