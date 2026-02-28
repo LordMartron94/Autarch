@@ -14,6 +14,7 @@ const (
 	EXPRESSION_CONCAT
 	EXPRESSION_UNION
 	EXPRESSION_REPEAT
+	EXPRESSION_CAPTURE
 )
 
 type charRange[TObservation any] struct {
@@ -234,6 +235,19 @@ func (r RegulaAST[TObservation]) Repeat(min, max int) RegulaAST[TObservation] {
 		panic("invalid repeat bounds")
 	}
 	return repeat(r, min, max)
+}
+
+/*
+Capture wraps the pattern in a capturing group.
+
+Warning: This has zero effect on the lexarch DFA execution. It exists
+strictly to map sub-expressions into PCRE capture groups during ToRegEx emission.
+*/
+func (r RegulaAST[TObservation]) Capture() RegulaAST[TObservation] {
+	return RegulaAST[TObservation]{
+		kind: EXPRESSION_CAPTURE,
+		sub:  &r,
+	}
 }
 
 /* RegulaASTFactory encapsulates the factory for constructing Regula AST. */
@@ -590,7 +604,7 @@ func regulaCollectSymbols[TObs any](n *RegulaAST[TObs], feeder symbolFeeder[TObs
 		regulaCollectSymbols(n.left, feeder)
 		regulaCollectSymbols(n.right, feeder)
 
-	case EXPRESSION_REPEAT:
+	case EXPRESSION_REPEAT, EXPRESSION_CAPTURE:
 		regulaCollectSymbols(n.sub, feeder)
 	}
 }
@@ -634,7 +648,7 @@ func regulaBindIDs[TObs any](n *RegulaAST[TObs], feeder symbolFeeder[TObs], next
 		regulaBindIDs(n.left, feeder, nextPos)
 		regulaBindIDs(n.right, feeder, nextPos)
 
-	case EXPRESSION_REPEAT:
+	case EXPRESSION_REPEAT, EXPRESSION_CAPTURE:
 		regulaBindIDs(n.sub, feeder, nextPos)
 	}
 }

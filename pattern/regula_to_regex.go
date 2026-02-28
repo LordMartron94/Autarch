@@ -121,7 +121,7 @@ func nodePrec[T any](n *RegulaAST[T]) regexPrec {
 		return precConcat
 	case EXPRESSION_REPEAT:
 		return precRepeat
-	case EXPRESSION_LITERAL, EXPRESSION_CLASS:
+	case EXPRESSION_LITERAL, EXPRESSION_CLASS, EXPRESSION_CAPTURE:
 		return precAtom
 	default:
 		return precAtom
@@ -138,6 +138,8 @@ func isRegexAtom[T any](n *RegulaAST[T]) bool {
 	case EXPRESSION_LITERAL:
 		return len(n.literals) == 1
 	case EXPRESSION_REPEAT:
+		return true
+	case EXPRESSION_CAPTURE:
 		return true
 	default:
 		return false
@@ -158,6 +160,18 @@ func emitRegexWith[T any](
 	}
 
 	switch n.kind {
+	case EXPRESSION_CAPTURE:
+		if n.sub == nil {
+			return fmt.Errorf("capture node has nil sub")
+		}
+
+		sb.WriteString("(")
+		if err := emitRegexWith(sb, n.sub, precLowest, cfg); err != nil {
+			return err
+		}
+		sb.WriteString(")")
+		return nil
+
 	case EXPRESSION_LITERAL:
 		return emitLiteralWith(sb, n.literals, cfg)
 
@@ -418,7 +432,7 @@ func escapeLiteralByte(b byte) string {
 
 func escapeClassRune(r rune) string {
 	switch r {
-	case '\\', '-', ']', '^':
+	case '[', '\\', '-', ']', '^':
 		return `\` + string(r)
 	}
 	if r == '\n' {
@@ -439,7 +453,7 @@ func escapeClassRune(r rune) string {
 func escapeClassByte(b byte) string {
 	r := rune(b)
 	switch r {
-	case '\\', '-', ']', '^':
+	case '[', '\\', '-', ']', '^':
 		return `\` + string(r)
 	case '\n':
 		return `\n`

@@ -13,11 +13,12 @@ func _() {
 	_ = x[EXPRESSION_CONCAT-2]
 	_ = x[EXPRESSION_UNION-3]
 	_ = x[EXPRESSION_REPEAT-4]
+	_ = x[EXPRESSION_CAPTURE-5]
 }
 
-const _ExpressionKind_name = "EXPRESSION_LITERALEXPRESSION_CLASSEXPRESSION_CONCATEXPRESSION_UNIONEXPRESSION_REPEAT"
+const _ExpressionKind_name = "EXPRESSION_LITERALEXPRESSION_CLASSEXPRESSION_CONCATEXPRESSION_UNIONEXPRESSION_REPEATEXPRESSION_CAPTURE"
 
-var _ExpressionKind_index = [...]uint8{0, 18, 34, 51, 67, 84}
+var _ExpressionKind_index = [...]uint8{0, 18, 34, 51, 67, 84, 102}
 
 func (i ExpressionKind) String() string {
 	idx := int(i) - 0
