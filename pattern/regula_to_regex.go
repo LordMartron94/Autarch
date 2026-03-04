@@ -297,24 +297,48 @@ func emitLiteralWith[T any](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T
 }
 
 func emitClassWith[T any](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
-	if len(cls.ranges) == 0 {
-		if cfg.EmptyClassAsNeverMatch {
-			sb.WriteString("(?!)")
-			return nil
-		}
-		return fmt.Errorf("empty char class")
+	if isClassEmpty(cls) {
+		return handleEmptyClass(sb, cfg)
 	}
 
 	sb.WriteString("[")
-	for _, r := range cls.ranges {
+
+	if len(cls.negatedFrom) > 0 {
+		sb.WriteString("^")
+		if err := writeRanges(sb, cls.negatedFrom, cfg); err != nil {
+			return err
+		}
+	} else {
+		if err := writeRanges(sb, cls.ranges, cfg); err != nil {
+			return err
+		}
+	}
+
+	sb.WriteString("]")
+	return nil
+}
+
+func writeRanges[T any](sb *strings.Builder, ranges []charRange[T], cfg RegexEmitConfig[T]) error {
+	for _, r := range ranges {
 		frag, err := cfg.Formatter.ClassRange(r.lo, r.hi)
 		if err != nil {
 			return err
 		}
 		sb.WriteString(frag)
 	}
-	sb.WriteString("]")
 	return nil
+}
+
+func isClassEmpty[T any](cls charClass[T]) bool {
+	return len(cls.ranges) == 0 && len(cls.negatedFrom) == 0
+}
+
+func handleEmptyClass[T any](sb *strings.Builder, cfg RegexEmitConfig[T]) error {
+	if cfg.EmptyClassAsNeverMatch {
+		sb.WriteString("(?!)")
+		return nil
+	}
+	return fmt.Errorf("empty char class")
 }
 
 // ============================================================
@@ -400,7 +424,7 @@ func escapeLiteralRune(r rune) string {
 		return `\t`
 	}
 	switch r {
-	case '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$':
+	case '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '"', '\'':
 		return `\` + string(r)
 	}
 	if !isPrintRune(r) {
@@ -432,20 +456,18 @@ func escapeLiteralByte(b byte) string {
 
 func escapeClassRune(r rune) string {
 	switch r {
-	case '[', '\\', '-', ']', '^':
+	case '[', '\\', '-', ']', '^', '"', '\'':
 		return `\` + string(r)
-	}
-	if r == '\n' {
+	case '\n':
 		return `\n`
-	}
-	if r == '\r' {
+	case '\r':
 		return `\r`
-	}
-	if r == '\t' {
+	case '\t':
 		return `\t`
 	}
+
 	if !isPrintRune(r) {
-		return fmt.Sprintf(`\x{%X}`, r)
+		return fmt.Sprintf(`\x{%04X}`, r)
 	}
 	return string(r)
 }

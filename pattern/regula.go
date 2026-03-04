@@ -23,7 +23,8 @@ type charRange[TObservation any] struct {
 }
 
 type charClass[TObservation any] struct {
-	ranges []charRange[TObservation] // sorted, merged
+	ranges      []charRange[TObservation] // The resolved, positive ranges (used by your DFA)
+	negatedFrom []charRange[TObservation] // The original intent (used by your Regex emitter)
 }
 
 type positionID uint64
@@ -407,8 +408,11 @@ Edge cases:
 func (r *RegulaASTFactory[TObservation]) Class(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
 	normalized := normalizeRanges(ranges, r.observationDomain.OrderingCmp)
 	return RegulaAST[TObservation]{
-		kind:  EXPRESSION_CLASS,
-		class: charClass[TObservation]{ranges: normalized},
+		kind: EXPRESSION_CLASS,
+		class: charClass[TObservation]{
+			ranges:      normalized,
+			negatedFrom: nil,
+		},
 	}
 }
 
@@ -441,8 +445,11 @@ func (r *RegulaASTFactory[TObservation]) NegatedClass(ranges ...charRange[TObser
 	inverted := r.invertRanges(normalized)
 
 	return RegulaAST[TObservation]{
-		kind:  EXPRESSION_CLASS,
-		class: charClass[TObservation]{ranges: inverted},
+		kind: EXPRESSION_CLASS,
+		class: charClass[TObservation]{
+			ranges:      inverted,
+			negatedFrom: normalized, // Preserve semantic intent
+		},
 	}
 }
 
