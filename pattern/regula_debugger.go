@@ -24,7 +24,7 @@ type RegulaDebugFormatter[TObservation any] struct {
 	FormatClassRange func(lo, hi TObservation) string
 
 	// FormatClass renders the full class.
-	FormatClass func(ranges []charRange[TObservation]) string
+	FormatClass func(ranges []CharRange[TObservation]) string
 
 	/* Binding metadata hooks (optional) */
 	FormatLogicalID  func(logicalID) string
@@ -266,7 +266,7 @@ func (d *RegulaDebugger[TObservation]) getPayload(g *RegulaAST[TObservation]) st
 		}
 		var res []string
 		for _, r := range g.class.ranges {
-			res = append(res, fmt.Sprintf("%s..%s", f.FormatObservation(r.lo), f.FormatObservation(r.hi)))
+			res = append(res, fmt.Sprintf("%s..%s", f.FormatObservation(r.Lo), f.FormatObservation(r.Hi)))
 		}
 		return "[" + strings.Join(res, ", ") + "]"
 	case EXPRESSION_REPEAT:

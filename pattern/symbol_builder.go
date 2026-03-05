@@ -23,7 +23,7 @@ type logicalID uint64
 
 type symbolRequest[TObs any] struct {
 	id     logicalID
-	ranges []charRange[TObs]
+	ranges []CharRange[TObs]
 }
 
 type symbolCollector[TObs any] struct {
@@ -65,7 +65,7 @@ func symbolCollectorAddLiteral[TObs any](c *symbolCollector[TObs], v TObs) logic
 
 	c.reqs = append(c.reqs, symbolRequest[TObs]{
 		id:     id,
-		ranges: []charRange[TObs]{{lo: v, hi: v}},
+		ranges: []CharRange[TObs]{{Lo: v, Hi: v}},
 	})
 
 	return id
@@ -135,7 +135,7 @@ func buildAlphabet[TObs any](
 	var points []TObs
 	for _, r := range reqs {
 		for _, cr := range r.ranges {
-			points = append(points, cr.lo, cr.hi)
+			points = append(points, cr.Lo, cr.Hi)
 		}
 	}
 
@@ -181,7 +181,7 @@ func buildAlphabet[TObs any](
 		var pointCover []logicalID
 		for _, r := range reqs {
 			for _, cr := range r.ranges {
-				if !observationDomain.LessThan(val, cr.lo) && !observationDomain.LessThan(cr.hi, val) {
+				if !observationDomain.LessThan(val, cr.Lo) && !observationDomain.LessThan(cr.Hi, val) {
 					pointCover = append(pointCover, r.id)
 					break
 				}
@@ -209,7 +209,7 @@ func buildAlphabet[TObs any](
 		var gapCover []logicalID
 		for _, r := range reqs {
 			for _, cr := range r.ranges {
-				if !observationDomain.LessThan(p, cr.lo) && !observationDomain.LessThan(cr.hi, next) {
+				if !observationDomain.LessThan(p, cr.Lo) && !observationDomain.LessThan(cr.Hi, next) {
 					gapCover = append(gapCover, r.id)
 					break
 				}

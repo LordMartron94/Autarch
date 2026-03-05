@@ -17,14 +17,14 @@ const (
 	EXPRESSION_CAPTURE
 )
 
-type charRange[TObservation any] struct {
-	lo TObservation
-	hi TObservation // inclusive
+type CharRange[TObservation any] struct {
+	Lo TObservation
+	Hi TObservation // inclusive
 }
 
 type charClass[TObservation any] struct {
-	ranges      []charRange[TObservation] // The resolved, positive ranges (used by your DFA)
-	negatedFrom []charRange[TObservation] // The original intent (used by your Regex emitter)
+	ranges      []CharRange[TObservation] // The resolved, positive ranges (used by your DFA)
+	negatedFrom []CharRange[TObservation] // The original intent (used by your Regex emitter)
 }
 
 type positionID uint64
@@ -372,10 +372,10 @@ Edge cases:
 - If lo == hi, the range matches exactly one observation
 - Ranges are normalized and merged when used in Class
 */
-func (r *RegulaASTFactory[TObservation]) Range(lo, hi TObservation) charRange[TObservation] {
-	return charRange[TObservation]{
-		lo: lo,
-		hi: hi,
+func (r *RegulaASTFactory[TObservation]) Range(lo, hi TObservation) CharRange[TObservation] {
+	return CharRange[TObservation]{
+		Lo: lo,
+		Hi: hi,
 	}
 }
 
@@ -405,7 +405,7 @@ Edge cases:
 - Ranges are sorted by lower bound during normalization
 - The resulting pattern maintains normalized ranges internally
 */
-func (r *RegulaASTFactory[TObservation]) Class(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
+func (r *RegulaASTFactory[TObservation]) Class(ranges ...CharRange[TObservation]) RegulaAST[TObservation] {
 	normalized := normalizeRanges(ranges, r.observationDomain.OrderingCmp)
 	return RegulaAST[TObservation]{
 		kind: EXPRESSION_CLASS,
@@ -440,7 +440,7 @@ Edge cases:
 - Ranges covering the whole domain: inverted is empty; the resulting pattern never matches a single observation.
 - Overlapping or unsorted ranges are normalized before inversion.
 */
-func (r *RegulaASTFactory[TObservation]) NegatedClass(ranges ...charRange[TObservation]) RegulaAST[TObservation] {
+func (r *RegulaASTFactory[TObservation]) NegatedClass(ranges ...CharRange[TObservation]) RegulaAST[TObservation] {
 	normalized := normalizeRanges(ranges, r.observationDomain.OrderingCmp)
 	inverted := r.invertRanges(normalized)
 
@@ -453,22 +453,22 @@ func (r *RegulaASTFactory[TObservation]) NegatedClass(ranges ...charRange[TObser
 	}
 }
 
-func (r *RegulaASTFactory[TObservation]) invertRanges(normalized []charRange[TObservation]) []charRange[TObservation] {
+func (r *RegulaASTFactory[TObservation]) invertRanges(normalized []CharRange[TObservation]) []CharRange[TObservation] {
 	d := r.observationDomain
-	var inverted []charRange[TObservation]
+	var inverted []CharRange[TObservation]
 
 	// Start at the absolute floor of the domain
 	currentPos := d.Min
 
 	for _, gap := range normalized {
 		// If there is space between currentPos and the start of the range, that's a match
-		if d.OrderingCmp(currentPos, gap.lo) < 0 {
-			prev, _ := d.PreviousFn(gap.lo)
-			inverted = append(inverted, charRange[TObservation]{lo: currentPos, hi: prev})
+		if d.OrderingCmp(currentPos, gap.Lo) < 0 {
+			prev, _ := d.PreviousFn(gap.Lo)
+			inverted = append(inverted, CharRange[TObservation]{Lo: currentPos, Hi: prev})
 		}
 
 		// Move currentPos to the first valid observation AFTER this range
-		next, exists := d.NextFn(gap.hi)
+		next, exists := d.NextFn(gap.Hi)
 		if !exists {
 			// We've hit the end of the domain (gap.hi was d.Max)
 			return inverted
@@ -478,7 +478,7 @@ func (r *RegulaASTFactory[TObservation]) invertRanges(normalized []charRange[TOb
 
 	// Final check: Is there a gap between the last range and d.Max?
 	if d.OrderingCmp(currentPos, d.Max) <= 0 {
-		inverted = append(inverted, charRange[TObservation]{lo: currentPos, hi: d.Max})
+		inverted = append(inverted, CharRange[TObservation]{Lo: currentPos, Hi: d.Max})
 	}
 
 	return inverted
@@ -530,7 +530,7 @@ func WordLiteral(factory *RegulaASTFactory[rune], s string) RegulaAST[rune] {
 
 func OneOf(factory *RegulaASTFactory[rune], chars string) RegulaAST[rune] {
 	runes := []rune(chars)
-	ranges := make([]charRange[rune], len(runes))
+	ranges := make([]CharRange[rune], len(runes))
 	for i, r := range runes {
 		ranges[i] = factory.Range(r, r)
 	}
@@ -547,21 +547,21 @@ func repeat[TObservation any](sub RegulaAST[TObservation], min, max int) RegulaA
 }
 
 func normalizeRanges[T any](
-	in []charRange[T],
+	in []CharRange[T],
 	cmpFn func(a, b T) int,
-) []charRange[T] {
+) []CharRange[T] {
 	if len(in) == 0 {
 		return nil
 	}
 
-	ranges := make([]charRange[T], len(in))
+	ranges := make([]CharRange[T], len(in))
 	copy(ranges, in)
 
-	slices.SortFunc(ranges, func(a, b charRange[T]) int {
-		return cmpFn(a.lo, b.lo)
+	slices.SortFunc(ranges, func(a, b CharRange[T]) int {
+		return cmpFn(a.Lo, b.Lo)
 	})
 
-	out := make([]charRange[T], 0, len(ranges))
+	out := make([]CharRange[T], 0, len(ranges))
 
 	cur := ranges[0]
 
@@ -569,11 +569,11 @@ func normalizeRanges[T any](
 		r := ranges[i]
 
 		// if r.lo <= cur.hi
-		if cmpFn(r.lo, cur.hi) <= 0 {
+		if cmpFn(r.Lo, cur.Hi) <= 0 {
 
 			// if r.hi > cur.hi
-			if cmpFn(r.hi, cur.hi) > 0 {
-				cur.hi = r.hi
+			if cmpFn(r.Hi, cur.Hi) > 0 {
+				cur.Hi = r.Hi
 			}
 
 		} else {

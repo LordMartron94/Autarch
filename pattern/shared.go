@@ -136,10 +136,10 @@ func hashValue[T any](v T, byteExtractor func(T) []byte) uint64 {
 	return hash.XXH3HasherHash64(xxh3Hasher, byteExtractor(v))
 }
 
-func hashRanges[T any](rs []charRange[T], byteExtractorMany func([]T) []byte) uint64 {
+func hashRanges[T any](rs []CharRange[T], byteExtractorMany func([]T) []byte) uint64 {
 	included := []T{}
 	for _, r := range rs {
-		included = append(included, r.lo, r.hi)
+		included = append(included, r.Lo, r.Hi)
 	}
 	return hash.XXH3HasherHash64(xxh3Hasher, byteExtractorMany(included))
 }

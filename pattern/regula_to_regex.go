@@ -2,8 +2,8 @@ package pattern
 
 import (
 	"fmt"
+	"foundation/text"
 	"strings"
-	"unicode"
 )
 
 // ============================================================
@@ -318,9 +318,9 @@ func emitClassWith[T any](sb *strings.Builder, cls charClass[T], cfg RegexEmitCo
 	return nil
 }
 
-func writeRanges[T any](sb *strings.Builder, ranges []charRange[T], cfg RegexEmitConfig[T]) error {
+func writeRanges[T any](sb *strings.Builder, ranges []CharRange[T], cfg RegexEmitConfig[T]) error {
 	for _, r := range ranges {
-		frag, err := cfg.Formatter.ClassRange(r.lo, r.hi)
+		frag, err := cfg.Formatter.ClassRange(r.Lo, r.Hi)
 		if err != nil {
 			return err
 		}
@@ -345,23 +345,23 @@ func handleEmptyClass[T any](sb *strings.Builder, cfg RegexEmitConfig[T]) error 
 // DEFAULT FORMATTERS (rune / byte)
 // ============================================================
 
-// RuneFormatter implements ObservationRegexFormatter for rune.
+// RuneFormatter implements ObservationRegexFormatter for rune using the foundation/text encoding.
 type RuneFormatter[T any] struct{}
 
-func (RuneFormatter[T]) Literal(o T) (string, error) {
+func (f RuneFormatter[T]) Literal(o T) (string, error) {
 	r, ok := any(o).(rune)
 	if !ok {
 		return "", fmt.Errorf("RuneFormatter: expected rune, got %T", o)
 	}
-	return escapeLiteralRune(r), nil
+	return text.EscapeRuneForRegexLiteral(r), nil
 }
 
-func (RuneFormatter[T]) ClassAtom(o T) (string, error) {
+func (f RuneFormatter[T]) ClassAtom(o T) (string, error) {
 	r, ok := any(o).(rune)
 	if !ok {
 		return "", fmt.Errorf("RuneFormatter: expected rune, got %T", o)
 	}
-	return escapeClassRune(r), nil
+	return text.EscapeRuneForRegexClass(r), nil
 }
 
 func (f RuneFormatter[T]) ClassRange(lo, hi T) (string, error) {
@@ -376,7 +376,7 @@ func (f RuneFormatter[T]) ClassRange(lo, hi T) (string, error) {
 	if rlo == rhi {
 		return f.ClassAtom(lo)
 	}
-	return escapeClassRune(rlo) + "-" + escapeClassRune(rhi), nil
+	return text.EscapeRuneForRegexClass(rlo) + "-" + text.EscapeRuneForRegexClass(rhi), nil
 }
 
 // ByteFormatter implements ObservationRegexFormatter for byte.
@@ -413,26 +413,6 @@ func (f ByteFormatter[T]) ClassRange(lo, hi T) (string, error) {
 	return escapeClassByte(blo) + "-" + escapeClassByte(bhi), nil
 }
 
-func escapeLiteralRune(r rune) string {
-	if r == '\n' {
-		return `\n`
-	}
-	if r == '\r' {
-		return `\r`
-	}
-	if r == '\t' {
-		return `\t`
-	}
-	switch r {
-	case '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '"', '\'':
-		return `\` + string(r)
-	}
-	if !isPrintRune(r) {
-		return fmt.Sprintf(`\x{%X}`, r)
-	}
-	return string(r)
-}
-
 func escapeLiteralByte(b byte) string {
 	r := rune(b)
 	if r == '\n' {
@@ -454,24 +434,6 @@ func escapeLiteralByte(b byte) string {
 	return string(r)
 }
 
-func escapeClassRune(r rune) string {
-	switch r {
-	case '[', '\\', '-', ']', '^', '"', '\'':
-		return `\` + string(r)
-	case '\n':
-		return `\n`
-	case '\r':
-		return `\r`
-	case '\t':
-		return `\t`
-	}
-
-	if !isPrintRune(r) {
-		return fmt.Sprintf(`\x{%04X}`, r)
-	}
-	return string(r)
-}
-
 func escapeClassByte(b byte) string {
 	r := rune(b)
 	switch r {
@@ -488,11 +450,4 @@ func escapeClassByte(b byte) string {
 		return fmt.Sprintf(`\x%02X`, b)
 	}
 	return string(r)
-}
-
-func isPrintRune(r rune) bool {
-	if r >= 0x20 && r != 0x7F && r <= 0x7E {
-		return true
-	}
-	return unicode.IsPrint(r)
 }

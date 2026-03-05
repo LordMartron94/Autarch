@@ -218,7 +218,7 @@ func (p *regexParser) parseClass() (RegulaAST[rune], error) {
 			p.advance()
 		}
 	}
-	var ranges []charRange[rune]
+	var ranges []CharRange[rune]
 	for {
 		if p.pos >= len(p.s) {
 			return RegulaAST[rune]{}, fmt.Errorf("RegexToRegula: unclosed [")

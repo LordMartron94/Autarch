@@ -76,8 +76,8 @@ func charClassEquivalent[TObservation any](
 		return false
 	}
 	for i := range a.ranges {
-		if !obsEqual(a.ranges[i].lo, b.ranges[i].lo) ||
-			!obsEqual(a.ranges[i].hi, b.ranges[i].hi) {
+		if !obsEqual(a.ranges[i].Lo, b.ranges[i].Lo) ||
+			!obsEqual(a.ranges[i].Hi, b.ranges[i].Hi) {
 			return false
 		}
 	}
