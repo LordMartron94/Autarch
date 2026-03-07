@@ -11,77 +11,58 @@ import (
 // ============================================================
 
 /*
-RegulaCompileToNFAThompson compiles multiple Regula patterns into NFAs using
-Thompson’s construction over a shared alphabet and symbol space.
+RegulaCompileToNFAThompson compiles multiple Regula patterns into a single, unified NFA
+using Thompson’s construction over a shared alphabet and symbol space.
 
-All provided patterns are:
+This function performs a unified compilation where all patterns are joined by a
+common start state via epsilon transitions. This is the preferred entry point for
+building lexers or multi-pattern matchers, as it produces a single state machine
+ready for determinization.
 
- 1. collected into a unified symbol set
- 2. bound to stable logical symbol IDs
- 3. expanded into a single physical alphabet
- 4. compiled into individual NFAs that share that alphabet
-
-This guarantees symbol coherence across all automata — a hard requirement
-for lexer and multi-pattern recognition systems.
-
-Unlike lower-level APIs, callers do NOT need to manually:
-
-  - collect symbols
-  - build alphabets
-  - bind logical IDs
-
-The shared compilation context handles the full preparation pipeline internally.
+The compilation pipeline:
+ 1. Collects all unique symbols across all patterns.
+ 2. Binds stable logical IDs and prepares a shared physical alphabet.
+ 3. Compiles each pattern into a Thompson fragment within a single compiler context.
+ 4. Links a global start state to each pattern's entry via epsilon (ε) edges.
 
 ---
 
 ### Use cases
 
-  - Lexer rule compilation (token NFAs per rule)
-  - Multi-pattern recognizers
-  - Shared-alphabet automata pipelines
-  - Static analyzer pattern sets
+  - Lexer generation (combining all token rules into one recognizer).
+  - High-performance multi-pattern matching.
+  - Contexts where epsilon-based NFA merging is more efficient than Glushkov.
 
 ---
 
 ### Outcome semantics
 
-  - Each compiled NFA has exactly one terminal state (the fragment’s accept state).
-  - The terminal state carries the instruction’s Outcome; all other states carry
-    the explicit nonTerminalOutcome. Acceptance is a client-defined semantic
-    (e.g. outcome != nonTerminalOutcome).
+  - The resulting NFA contains one global start state (0).
+  - Each pattern's terminal (accept) state carries its specific instruction Outcome.
+  - All intermediate and non-accepting states carry the nonTerminalOutcome.
+  - If multiple patterns match the same input, the downstream DFA resolution
+    strategy (e.g., "first-match" or "highest priority") will determine the winner.
 
 ---
 
 ### Performance characteristics
 
-Symbol preparation is performed once for the entire instruction batch.
-
-Compilation is linear in:
-
-  - total AST size across all patterns
-  - number of emitted transitions
+  - Preparation (alphabet/symbol binding) is performed once for the batch.
+  - Construction is O(N) where N is the total number of AST nodes across all patterns.
+  - Produces an ε-NFA with O(N) states and transitions.
 
 ---
 
 ### Preconditions
 
-  - instructions must be non-empty
-  - each instruction must contain a valid Regula AST
-  - the shared compilation context must not be reused concurrently
-
----
-
-### Error cases
-
-  - Returns an error if the instruction list is empty
-  - Panics only on internal invariants (invalid AST structure)
+  - instructions must be non-empty.
+  - The shared compilation context must not be reused concurrently.
 
 ---
 
 ### Returns
 
-  - One NFA per instruction, in the same order as provided
-  - All NFAs share the same alphabet and symbol indexer
+  - A single *autarch.NFA representing the union of all provided patterns.
 */
 func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 	alloc memarch.AllocationFn,
@@ -108,45 +89,62 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 		&nextPos,
 	)
 
-	out := make([]*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]], len(patterns))
+	// Initialize a single compiler for the entire union
+	c := newThompsonCompiler[TObs](ctx.expander, nonTerminalOutcome)
 
-	for i, instruction := range instructions {
-		c := newThompsonCompiler[TObs](ctx.expander, instruction.Outcome)
+	// Create the global entry point for the union
+	rootStart := c.newState()
+
+	// Map terminal states to their respective outcomes and annotations
+	terminalOutcomes := make(map[uint64]TOutcome)
+	terminalAnnotations := make(map[uint64]AnnotationID)
+
+	for _, instruction := range instructions {
 		frag := c.compile(instruction.Pattern)
 
-		numStates := c.nextState
-		outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
+		// Wire the global root to this pattern's entry
+		c.eps(rootStart, frag.start)
 
-		// 1. Initialize every state to the explicit non-terminal outcome.
-		for state := uint64(0); state < numStates; state++ {
-			outcomes[state] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
+		terminalOutcomes[frag.accept] = instruction.Outcome
+
+		if instruction.Pattern.annotationID != nil {
+			terminalAnnotations[frag.accept] = *instruction.Pattern.annotationID
 		}
-
-		// 2. Process annotations captured in the map during recursion.
-		for state, annID := range c.annotations {
-			outcomes[state] = AnnotatedOutcome[TOutcome]{
-				Value:      instruction.Outcome,
-				Annotation: &annID,
-			}
-		}
-
-		// 3. Terminal state: set the instruction outcome if not already set by annotation.
-		if _, hasAnn := c.annotations[frag.accept]; !hasAnn {
-			outcomes[frag.accept] = AnnotatedOutcome[TOutcome]{Value: instruction.Outcome}
-		}
-
-		out[i] = autarch.NFACreate(
-			alloc,
-			ctx.alphabet,
-			c.transitions,
-			c.epsilonEdges,
-			[]uint64{frag.start},
-			outcomes,
-			ctx.indexer,
-		)
 	}
 
-	return out, nil
+	numStates := c.nextState
+	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
+
+	for state := uint64(0); state < numStates; state++ {
+		outcomes[state] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
+
+		// Apply terminal outcomes
+		if val, isTerminal := terminalOutcomes[state]; isTerminal {
+			outcomes[state].Value = val
+
+			// Priority: Node-level annotation > Compiler-captured annotation
+			if ann, hasAnn := terminalAnnotations[state]; hasAnn {
+				val := ann
+				outcomes[state].Annotation = &val
+			} else if ann, hasAnn := c.annotations[state]; hasAnn {
+				val := ann
+				outcomes[state].Annotation = &val
+			}
+		}
+	}
+
+	nfa := autarch.NFACreate(
+		alloc,
+		ctx.alphabet,
+		c.transitions,
+		c.epsilonEdges,
+		[]uint64{rootStart},
+		outcomes,
+		ctx.indexer,
+	)
+
+	// Return as a single-element slice to satisfy the compiler interface signature
+	return []*autarch.NFA[TObs, AnnotatedOutcome[TOutcome]]{nfa}, nil
 }
 
 // ============================================================
@@ -161,17 +159,11 @@ type nfaFragment struct {
 type thompsonCompiler[TObs any, TOutcome any] struct {
 	nextState uint64
 
-	// Dense hot path: append-only transitions.
-	transitions []autarch.Transition[TObs]
-
-	// Sparse adjacency: epsilon edges.
+	transitions  []autarch.Transition[TObs]
 	epsilonEdges map[uint64][]uint64
-
-	// Logical → physical symbol expansion is now strategy-agnostic.
-	expander symbolExpander
-
-	baseOutcome TOutcome
-	annotations map[uint64]AnnotationID
+	expander     symbolExpander
+	baseOutcome  TOutcome
+	annotations  map[uint64]AnnotationID
 }
 
 func newThompsonCompiler[TObs any, TOutcome any](expander symbolExpander, base TOutcome) *thompsonCompiler[TObs, TOutcome] {
@@ -197,17 +189,12 @@ func (c *thompsonCompiler[TObs, TOutcome]) eps(from, to uint64) {
 	c.epsilonEdges[from] = append(c.epsilonEdges[from], to)
 }
 
-// emitLogical expands one logical symbol to all covering physical symbol IDs and emits transitions.
-// This is the ordering you want for efficiency:
-//  1. expand once,
-//  2. fast loop append transitions.
 func (c *thompsonCompiler[TObs, TOutcome]) emitLogical(from uint64, lid logicalID, to uint64) {
 	phys := c.expander.expand(lid)
 	if len(phys) == 0 {
 		return
 	}
 
-	// Reserve exactly what we will append (best-effort; avoids repeated growth).
 	base := len(c.transitions)
 	c.transitions = append(c.transitions, make([]autarch.Transition[TObs], len(phys))...)
 	out := c.transitions[base:]
@@ -245,6 +232,9 @@ func (c *thompsonCompiler[TObs, TOutcome]) compile(n *RegulaAST[TObs]) nfaFragme
 		frag = out
 	case EXPRESSION_REPEAT:
 		frag = c.repeat(n)
+	case EXPRESSION_CAPTURE:
+		// Explicit pass-through. Without this, regex parsers dropping capture groups will fail.
+		frag = c.compile(n.sub)
 	default:
 		panic("unknown node kind")
 	}
@@ -283,7 +273,6 @@ func (c *thompsonCompiler[TObs, TOutcome]) class(lid logicalID) nfaFragment {
 }
 
 func (c *thompsonCompiler[TObs, TOutcome]) repeat(n *RegulaAST[TObs]) nfaFragment {
-	// Fast-path common quantifiers first (hot).
 	if n.min == 0 && n.max == -1 { // *
 		a := c.compile(n.sub)
 		out := c.newFrag()
@@ -318,33 +307,21 @@ func (c *thompsonCompiler[TObs, TOutcome]) repeat(n *RegulaAST[TObs]) nfaFragmen
 		return out
 	}
 
-	// Bounded {m,n}
-	// Implementation notes:
-	// - Build the mandatory chain of m occurrences.
-	// - Then append (n-m) optional occurrences, each wrapped by an "optional" fragment.
-	//
-	// Ordering for efficiency:
-	// - avoid rebuilding "out := newFrag(); eps(out.start, out.accept)" unless needed
-	// - keep ε appends localized.
-
 	out := c.newFrag()
-	c.eps(out.start, out.accept) // allow 0 total (used when min==0), harmless otherwise
+	c.eps(out.start, out.accept) // allow 0 total
 
 	cur := out
 
-	// Mandatory part
 	for i := 0; i < n.min; i++ {
 		part := c.compile(n.sub)
 		c.eps(cur.accept, part.start)
 		cur = nfaFragment{start: cur.start, accept: part.accept}
 	}
 
-	// Exactly {m,m}
 	if n.max == n.min {
 		return cur
 	}
 
-	// Optional tail
 	for i := 0; i < n.max-n.min; i++ {
 		part := c.compile(n.sub)
 

@@ -776,6 +776,15 @@ func cloneAST[TObs any](n *RegulaAST[TObs]) *RegulaAST[TObs] {
 		copy(clone.literals, n.literals)
 	}
 
+	if len(n.class.ranges) > 0 {
+		clone.class.ranges = make([]CharRange[TObs], len(n.class.ranges))
+		copy(clone.class.ranges, n.class.ranges)
+	}
+	if len(n.class.negatedFrom) > 0 {
+		clone.class.negatedFrom = make([]CharRange[TObs], len(n.class.negatedFrom))
+		copy(clone.class.negatedFrom, n.class.negatedFrom)
+	}
+
 	clone.left = cloneAST(n.left)
 	clone.right = cloneAST(n.right)
 	clone.sub = cloneAST(n.sub)
