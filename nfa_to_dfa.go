@@ -2,6 +2,7 @@ package autarch
 
 import (
 	"fmt"
+	"foundation/formatting"
 	"memarch"
 	"memcore"
 	"memforge"
@@ -261,7 +262,7 @@ func createTempAllocator(minMem, maxMem memcore.MemoryUnitBytes) memcore.MarkRaw
 		func(curr, need uint64) uint64 {
 			nextSize := max(curr*2, need)
 			if nextSize > uint64(maxMem) {
-				panic(fmt.Errorf("NFA->DFA allocation overflow: %d > %d", nextSize, maxMem))
+				panic(fmt.Errorf("NFA->DFA allocation overflow: %s > %s", formatting.FormatMemoryBytes(nextSize), formatting.FormatMemoryBytes(uint64(maxMem))))
 			}
 			return nextSize
 		},
