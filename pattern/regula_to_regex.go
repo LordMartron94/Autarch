@@ -36,15 +36,16 @@ RegexEmitConfig controls how AST nodes are grouped in the emitted regex.
 type RegexEmitConfig[T any] struct {
 	Formatter ObservationRegexFormatter[T]
 
-	// If true, union nodes are always emitted as (?:a|b).
-	// This is strongly recommended.
+	// GroupUnions dictates whether union nodes are always emitted as (?:a|b).
+	// This is strongly recommended to prevent precedence leaking.
 	GroupUnions bool
 
-	// If true, epsilon is emitted as (?:). If false, epsilon is emitted as "".
-	// (?:) is safer when concatenated in larger contexts and easier to debug.
+	// EpsilonAsNonCapturingGroup dictates whether epsilon is emitted as (?:).
+	// If false, epsilon is emitted as "". (?:) is safer when concatenated.
 	EpsilonAsNonCapturingGroup bool
 
-	// If true, an empty class emits (?!) (never-match). If false, it errors.
+	// EmptyClassAsNeverMatch dictates whether an empty class emits (?!) (never-match).
+	// If false, attempting to emit an empty class yields an error.
 	EmptyClassAsNeverMatch bool
 }
 
@@ -55,7 +56,8 @@ func (r RegulaAST[TObservation]) ToRegExWith(cfg RegexEmitConfig[TObservation]) 
 	if cfg.Formatter == nil {
 		return "", fmt.Errorf("ToRegExWith: nil Formatter")
 	}
-	// sensible defaults
+
+	// Sensible defaults
 	if !cfg.GroupUnions {
 		cfg.GroupUnions = true
 	}
@@ -66,29 +68,35 @@ func (r RegulaAST[TObservation]) ToRegExWith(cfg RegexEmitConfig[TObservation]) 
 		cfg.EmptyClassAsNeverMatch = true
 	}
 
-	var sb strings.Builder
-	if err := emitRegexWith(&sb, &r, precLowest, cfg); err != nil {
-		return "", err
+	d := newRegexDecompiler(cfg)
+	d.walk(&r, precLowest)
+
+	if d.err != nil {
+		return "", d.err
 	}
-	return sb.String(), nil
+	return d.out.String(), nil
 }
 
 /*
-ToRegEx is a convenience wrapper:
-  - Supports rune and byte only.
-  - For anything else, you MUST call ToRegExWith and inject a formatter.
+ToRegEx is a convenience wrapper for ASTs dealing with runes or bytes.
+For anything else, you MUST call ToRegExWith and inject a formatter.
 */
 func (r RegulaAST[TObservation]) ToRegEx() (string, error) {
-	// Default formatter only for rune/byte.
 	var zero TObservation
 	switch any(zero).(type) {
 	case rune:
 		return r.ToRegExWith(RegexEmitConfig[TObservation]{
-			Formatter: RuneFormatter[TObservation]{},
+			Formatter:                  RuneFormatter[TObservation]{},
+			GroupUnions:                true,
+			EpsilonAsNonCapturingGroup: true,
+			EmptyClassAsNeverMatch:     true,
 		})
 	case byte:
 		return r.ToRegExWith(RegexEmitConfig[TObservation]{
-			Formatter: ByteFormatter[TObservation]{},
+			Formatter:                  ByteFormatter[TObservation]{},
+			GroupUnions:                true,
+			EpsilonAsNonCapturingGroup: true,
+			EmptyClassAsNeverMatch:     true,
 		})
 	default:
 		return "", fmt.Errorf("ToRegEx: unsupported observation type %T (use ToRegExWith + formatter)", zero)
@@ -96,10 +104,10 @@ func (r RegulaAST[TObservation]) ToRegEx() (string, error) {
 }
 
 // ============================================================
-// PRECEDENCE / EMISSION CORE
+// PRECEDENCE / DECOMPILER
 // ============================================================
 
-// precedence: larger binds tighter
+// regexPrec defines the precedence level; larger binds tighter
 type regexPrec uint8
 
 const (
@@ -110,242 +118,229 @@ const (
 	precAtom                    // literal(1) / class / grouped
 )
 
-func nodePrec[T any](n *RegulaAST[T]) regexPrec {
-	if n == nil {
-		return precAtom
-	}
-	switch n.kind {
-	case EXPRESSION_UNION:
-		return precUnion
-	case EXPRESSION_CONCAT:
-		return precConcat
-	case EXPRESSION_REPEAT:
-		return precRepeat
-	case EXPRESSION_LITERAL, EXPRESSION_CLASS, EXPRESSION_CAPTURE:
-		return precAtom
-	default:
-		return precAtom
-	}
-}
-
 func isRegexAtom[T any](n *RegulaAST[T]) bool {
 	if n == nil {
 		return true
 	}
 	switch n.kind {
-	case EXPRESSION_CLASS:
+	case EXPRESSION_CLASS, EXPRESSION_CAPTURE:
 		return true
 	case EXPRESSION_LITERAL:
 		return len(n.literals) == 1
 	case EXPRESSION_REPEAT:
-		return true
-	case EXPRESSION_CAPTURE:
 		return true
 	default:
 		return false
 	}
 }
 
-func emitRegexWith[T any](
-	sb *strings.Builder,
-	n *RegulaAST[T],
-	parentPrec regexPrec,
-	cfg RegexEmitConfig[T],
-) error {
+/*
+regexDecompiler manages the state of the AST serialization process.
+It tracks errors and hierarchical precedence to ensure structural integrity.
+*/
+type regexDecompiler[T any] struct {
+	out        *strings.Builder
+	cfg        RegexEmitConfig[T]
+	parentPrec regexPrec
+	err        error
+}
+
+func newRegexDecompiler[T any](cfg RegexEmitConfig[T]) *regexDecompiler[T] {
+	return &regexDecompiler[T]{
+		out:        &strings.Builder{},
+		cfg:        cfg,
+		parentPrec: precLowest,
+	}
+}
+
+/*
+walk executes the visitor pattern while managing precedence state transitions.
+*/
+func (d *regexDecompiler[T]) walk(n *RegulaAST[T], targetPrec regexPrec) {
+	if d.err != nil {
+		return
+	}
+
 	if n == nil {
-		if cfg.EpsilonAsNonCapturingGroup {
-			sb.WriteString("(?:)")
+		if d.cfg.EpsilonAsNonCapturingGroup {
+			d.out.WriteString("(?:)")
 		}
-		return nil
+		return
 	}
 
-	switch n.kind {
-	case EXPRESSION_CAPTURE:
-		if n.sub == nil {
-			return fmt.Errorf("capture node has nil sub")
-		}
+	oldPrec := d.parentPrec
+	d.parentPrec = targetPrec
+	n.Accept(d.visitor())
+	d.parentPrec = oldPrec
+}
 
-		sb.WriteString("(")
-		if err := emitRegexWith(sb, n.sub, precLowest, cfg); err != nil {
-			return err
-		}
-		sb.WriteString(")")
-		return nil
-
-	case EXPRESSION_LITERAL:
-		return emitLiteralWith(sb, n.literals, cfg)
-
-	case EXPRESSION_CLASS:
-		return emitClassWith(sb, n.class, cfg)
-
-	case EXPRESSION_CONCAT:
-		if n.left == nil || n.right == nil {
-			return fmt.Errorf("concat node has nil child")
-		}
-		needGroup := nodePrec(n) < parentPrec
-		if needGroup {
-			sb.WriteString("(?:")
-		}
-		if err := emitRegexWith(sb, n.left, precConcat, cfg); err != nil {
-			return err
-		}
-		if err := emitRegexWith(sb, n.right, precConcat, cfg); err != nil {
-			return err
-		}
-		if needGroup {
-			sb.WriteString(")")
-		}
-		return nil
-
-	case EXPRESSION_UNION:
-		if n.left == nil || n.right == nil {
-			return fmt.Errorf("union node has nil child")
-		}
-
-		// Strong recommendation: always group unions.
-		if cfg.GroupUnions {
-			sb.WriteString("(?:")
-		} else {
-			// Only group if precedence requires it.
-			if nodePrec(n) < parentPrec {
-				sb.WriteString("(?:")
-				cfg.GroupUnions = true // local effect
-			}
-		}
-
-		if err := emitRegexWith(sb, n.left, precUnion, cfg); err != nil {
-			return err
-		}
-		sb.WriteString("|")
-		if err := emitRegexWith(sb, n.right, precUnion, cfg); err != nil {
-			return err
-		}
-
-		if cfg.GroupUnions {
-			sb.WriteString(")")
-		}
-		return nil
-
-	case EXPRESSION_REPEAT:
-		if n.sub == nil {
-			return fmt.Errorf("repeat node has nil sub")
-		}
-
-		subIsAtom := isRegexAtom(n.sub)
-		if !subIsAtom {
-			sb.WriteString("(?:")
-		}
-		if err := emitRegexWith(sb, n.sub, precRepeat, cfg); err != nil {
-			return err
-		}
-		if !subIsAtom {
-			sb.WriteString(")")
-		}
-
-		switch {
-		case n.min == 0 && n.max == -1:
-			sb.WriteString("*")
-		case n.min == 1 && n.max == -1:
-			sb.WriteString("+")
-		case n.min == 0 && n.max == 1:
-			sb.WriteString("?")
-		case n.max == -1:
-			if n.min < 0 {
-				return fmt.Errorf("invalid repeat bounds: min=%d max=%d", n.min, n.max)
-			}
-			sb.WriteString("{")
-			sb.WriteString(fmt.Sprintf("%d", n.min))
-			sb.WriteString(",}")
-		case n.min == n.max:
-			if n.min < 0 {
-				return fmt.Errorf("invalid repeat bounds: min=%d max=%d", n.min, n.max)
-			}
-			sb.WriteString("{")
-			sb.WriteString(fmt.Sprintf("%d", n.min))
-			sb.WriteString("}")
-		default:
-			if n.min < 0 || n.max < n.min {
-				return fmt.Errorf("invalid repeat bounds: min=%d max=%d", n.min, n.max)
-			}
-			sb.WriteString("{")
-			sb.WriteString(fmt.Sprintf("%d,%d", n.min, n.max))
-			sb.WriteString("}")
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("unknown regula node kind: %v", n.kind)
+func (d *regexDecompiler[T]) visitor() RegulaVisitor[T] {
+	return RegulaVisitor[T]{
+		VisitLiteral: d.visitLiteral,
+		VisitClass:   d.visitClass,
+		VisitConcat:  d.visitConcat,
+		VisitUnion:   d.visitUnion,
+		VisitRepeat:  d.visitRepeat,
+		VisitCapture: d.visitCapture,
 	}
 }
 
-func emitLiteralWith[T any](sb *strings.Builder, vals []T, cfg RegexEmitConfig[T]) error {
-	if len(vals) == 0 {
-		if cfg.EpsilonAsNonCapturingGroup {
-			sb.WriteString("(?:)")
+func (d *regexDecompiler[T]) visitLiteral(values []T) {
+	if len(values) == 0 {
+		if d.cfg.EpsilonAsNonCapturingGroup {
+			d.out.WriteString("(?:)")
 		}
-		return nil
+		return
 	}
 
-	for _, v := range vals {
-		s, err := cfg.Formatter.Literal(v)
+	for _, v := range values {
+		s, err := d.cfg.Formatter.Literal(v)
 		if err != nil {
-			return err
+			d.err = err
+			return
 		}
-		sb.WriteString(s)
+		d.out.WriteString(s)
 	}
-	return nil
 }
 
-func emitClassWith[T any](sb *strings.Builder, cls charClass[T], cfg RegexEmitConfig[T]) error {
-	if isClassEmpty(cls) {
-		return handleEmptyClass(sb, cfg)
+func (d *regexDecompiler[T]) visitClass(ranges []CharRange[T], negatedFrom []CharRange[T]) {
+	if len(ranges) == 0 && len(negatedFrom) == 0 {
+		if d.cfg.EmptyClassAsNeverMatch {
+			d.out.WriteString("(?!)")
+		} else {
+			d.err = fmt.Errorf("empty char class")
+		}
+		return
 	}
 
-	sb.WriteString("[")
+	d.out.WriteString("[")
 
-	if len(cls.negatedFrom) > 0 {
-		sb.WriteString("^")
-		if err := writeRanges(sb, cls.negatedFrom, cfg); err != nil {
-			return err
+	if len(negatedFrom) > 0 {
+		d.out.WriteString("^")
+		for _, r := range negatedFrom {
+			frag, err := d.cfg.Formatter.ClassRange(r.Lo, r.Hi)
+			if err != nil {
+				d.err = err
+				return
+			}
+			d.out.WriteString(frag)
 		}
 	} else {
-		if err := writeRanges(sb, cls.ranges, cfg); err != nil {
-			return err
+		for _, r := range ranges {
+			frag, err := d.cfg.Formatter.ClassRange(r.Lo, r.Hi)
+			if err != nil {
+				d.err = err
+				return
+			}
+			d.out.WriteString(frag)
 		}
 	}
 
-	sb.WriteString("]")
-	return nil
+	d.out.WriteString("]")
 }
 
-func writeRanges[T any](sb *strings.Builder, ranges []CharRange[T], cfg RegexEmitConfig[T]) error {
-	for _, r := range ranges {
-		frag, err := cfg.Formatter.ClassRange(r.Lo, r.Hi)
-		if err != nil {
-			return err
+func (d *regexDecompiler[T]) visitConcat(left, right *RegulaAST[T]) {
+	if left == nil || right == nil {
+		d.err = fmt.Errorf("concat node has nil child")
+		return
+	}
+
+	needGroup := precConcat < d.parentPrec
+	if needGroup {
+		d.out.WriteString("(?:")
+	}
+
+	d.walk(left, precConcat)
+	d.walk(right, precConcat)
+
+	if needGroup {
+		d.out.WriteString(")")
+	}
+}
+
+func (d *regexDecompiler[T]) visitUnion(left, right *RegulaAST[T]) {
+	if left == nil || right == nil {
+		d.err = fmt.Errorf("union node has nil child")
+		return
+	}
+
+	needGroup := d.cfg.GroupUnions || precUnion < d.parentPrec
+	if needGroup {
+		d.out.WriteString("(?:")
+	}
+
+	d.walk(left, precUnion)
+	d.out.WriteString("|")
+	d.walk(right, precUnion)
+
+	if needGroup {
+		d.out.WriteString(")")
+	}
+}
+
+func (d *regexDecompiler[T]) visitRepeat(sub *RegulaAST[T], min, max int) {
+	if sub == nil {
+		d.err = fmt.Errorf("repeat node has nil sub")
+		return
+	}
+
+	subIsAtom := isRegexAtom(sub)
+	if !subIsAtom {
+		d.out.WriteString("(?:")
+	}
+
+	d.walk(sub, precRepeat)
+
+	if !subIsAtom {
+		d.out.WriteString(")")
+	}
+
+	switch {
+	case min == 0 && max == -1:
+		d.out.WriteString("*")
+	case min == 1 && max == -1:
+		d.out.WriteString("+")
+	case min == 0 && max == 1:
+		d.out.WriteString("?")
+	case max == -1:
+		if min < 0 {
+			d.err = fmt.Errorf("invalid repeat bounds: min=%d max=%d", min, max)
+			return
 		}
-		sb.WriteString(frag)
+		d.out.WriteString(fmt.Sprintf("{%d,}", min))
+	case min == max:
+		if min < 0 {
+			d.err = fmt.Errorf("invalid repeat bounds: min=%d max=%d", min, max)
+			return
+		}
+		d.out.WriteString(fmt.Sprintf("{%d}", min))
+	default:
+		if min < 0 || max < min {
+			d.err = fmt.Errorf("invalid repeat bounds: min=%d max=%d", min, max)
+			return
+		}
+		d.out.WriteString(fmt.Sprintf("{%d,%d}", min, max))
 	}
-	return nil
 }
 
-func isClassEmpty[T any](cls charClass[T]) bool {
-	return len(cls.ranges) == 0 && len(cls.negatedFrom) == 0
-}
-
-func handleEmptyClass[T any](sb *strings.Builder, cfg RegexEmitConfig[T]) error {
-	if cfg.EmptyClassAsNeverMatch {
-		sb.WriteString("(?!)")
-		return nil
+func (d *regexDecompiler[T]) visitCapture(sub *RegulaAST[T]) {
+	if sub == nil {
+		d.err = fmt.Errorf("capture node has nil sub")
+		return
 	}
-	return fmt.Errorf("empty char class")
+
+	d.out.WriteString("(")
+	d.walk(sub, precLowest)
+	d.out.WriteString(")")
 }
 
 // ============================================================
 // DEFAULT FORMATTERS (rune / byte)
 // ============================================================
 
-// RuneFormatter implements ObservationRegexFormatter for rune using the foundation/text encoding.
+/*
+RuneFormatter implements ObservationRegexFormatter for rune using the foundation/text encoding.
+*/
 type RuneFormatter[T any] struct{}
 
 func (f RuneFormatter[T]) Literal(o T) (string, error) {
@@ -353,7 +348,7 @@ func (f RuneFormatter[T]) Literal(o T) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("RuneFormatter: expected rune, got %T", o)
 	}
-	return text.EscapeRuneForRegexLiteral(r), nil
+	return text.RegexLiteralEscaper.EscapeRune(r), nil
 }
 
 func (f RuneFormatter[T]) ClassAtom(o T) (string, error) {
@@ -361,7 +356,7 @@ func (f RuneFormatter[T]) ClassAtom(o T) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("RuneFormatter: expected rune, got %T", o)
 	}
-	return text.EscapeRuneForRegexClass(r), nil
+	return text.RegexClassEscaper.EscapeRune(r), nil
 }
 
 func (f RuneFormatter[T]) ClassRange(lo, hi T) (string, error) {
@@ -376,26 +371,29 @@ func (f RuneFormatter[T]) ClassRange(lo, hi T) (string, error) {
 	if rlo == rhi {
 		return f.ClassAtom(lo)
 	}
-	return text.EscapeRuneForRegexClass(rlo) + "-" + text.EscapeRuneForRegexClass(rhi), nil
+	return text.RegexClassEscaper.EscapeRune(rlo) + "-" + text.RegexClassEscaper.EscapeRune(rhi), nil
 }
 
-// ByteFormatter implements ObservationRegexFormatter for byte.
+/*
+ByteFormatter implements ObservationRegexFormatter for byte.
+It delegates to the foundation/text regex escapers by casting the byte to a rune.
+*/
 type ByteFormatter[T any] struct{}
 
-func (ByteFormatter[T]) Literal(o T) (string, error) {
+func (f ByteFormatter[T]) Literal(o T) (string, error) {
 	b, ok := any(o).(byte)
 	if !ok {
 		return "", fmt.Errorf("ByteFormatter: expected byte, got %T", o)
 	}
-	return escapeLiteralByte(b), nil
+	return text.RegexLiteralEscaper.EscapeRune(rune(b)), nil
 }
 
-func (ByteFormatter[T]) ClassAtom(o T) (string, error) {
+func (f ByteFormatter[T]) ClassAtom(o T) (string, error) {
 	b, ok := any(o).(byte)
 	if !ok {
 		return "", fmt.Errorf("ByteFormatter: expected byte, got %T", o)
 	}
-	return escapeClassByte(b), nil
+	return text.RegexClassEscaper.EscapeRune(rune(b)), nil
 }
 
 func (f ByteFormatter[T]) ClassRange(lo, hi T) (string, error) {
@@ -410,44 +408,5 @@ func (f ByteFormatter[T]) ClassRange(lo, hi T) (string, error) {
 	if blo == bhi {
 		return f.ClassAtom(lo)
 	}
-	return escapeClassByte(blo) + "-" + escapeClassByte(bhi), nil
-}
-
-func escapeLiteralByte(b byte) string {
-	r := rune(b)
-	if r == '\n' {
-		return `\n`
-	}
-	if r == '\r' {
-		return `\r`
-	}
-	if r == '\t' {
-		return `\t`
-	}
-	switch r {
-	case '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$':
-		return `\` + string(r)
-	}
-	if r < 0x20 || r == 0x7F {
-		return fmt.Sprintf(`\x%02X`, b)
-	}
-	return string(r)
-}
-
-func escapeClassByte(b byte) string {
-	r := rune(b)
-	switch r {
-	case '[', '\\', '-', ']', '^':
-		return `\` + string(r)
-	case '\n':
-		return `\n`
-	case '\r':
-		return `\r`
-	case '\t':
-		return `\t`
-	}
-	if r < 0x20 || r == 0x7F {
-		return fmt.Sprintf(`\x%02X`, b)
-	}
-	return string(r)
+	return text.RegexClassEscaper.EscapeRune(rune(blo)) + "-" + text.RegexClassEscaper.EscapeRune(rune(bhi)), nil
 }
