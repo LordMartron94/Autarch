@@ -4,6 +4,7 @@ import (
 	"autarch"
 	"fmt"
 	"memarch"
+	"sort"
 )
 
 // positionSet is a dense bitset representing a set of position IDs.
@@ -401,9 +402,15 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 	baseOutcome TOutcome,
 	nonTerminalOutcome TOutcome,
 ) *autarch.NFA[TObs, AnnotatedOutcome[TOutcome]] {
-	numStates := uint64(pm.maxPos) + 1
-	transitions := make([]autarch.Transition[TObs], 0)
+	localPositions := buildLocalPositions(pm)
+	numLocalPositions := len(localPositions)
+	numStates := uint64(numLocalPositions) + 1
+	globalToLocal := make(map[positionID]uint64, numLocalPositions)
+	for i, p := range localPositions {
+		globalToLocal[p] = uint64(i) + 1
+	}
 
+	transitions := make([]autarch.Transition[TObs], 0)
 	expansionCache := make([][]physicalID, len(ctx.alphabet)+1)
 	getExpansion := func(lid logicalID) []physicalID {
 		if expansionCache[lid] == nil {
@@ -412,57 +419,63 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 		return expansionCache[lid]
 	}
 
-	emit := func(from uint64, toPos positionID) {
+	emit := func(fromLocal uint64, toPos positionID) {
+		toLocal, ok := globalToLocal[toPos]
+		if !ok {
+			return
+		}
 		phys := getExpansion(pm.symByPos[toPos])
 		for _, pid := range phys {
 			transitions = append(transitions, autarch.Transition[TObs]{
-				CurrentState: from,
-				NextState:    uint64(toPos),
+				CurrentState: fromLocal,
+				NextState:    toLocal,
 				Symbol:       autarch.SymbolCreate[TObs]("", uint64(pid)),
 			})
 		}
 	}
 
-	// 1. Initial Transitions: Start State (0) -> First Positions
+	// 1. Initial Transitions: Start State (0) -> First Positions (only positions in this pattern)
 	info.first.iter(func(p positionID) {
-		emit(0, p)
+		if _, ok := globalToLocal[p]; ok {
+			emit(0, p)
+		}
 	})
 
-	// 2. Follow Transitions: Pos P -> Pos Q
-	for p := positionID(1); p <= pm.maxPos; p++ {
+	// 2. Follow Transitions: only (p, q) where both are in this pattern
+	for _, p := range localPositions {
 		follow[p].iter(func(q positionID) {
-			emit(uint64(p), q)
+			if _, ok := globalToLocal[q]; ok {
+				emit(globalToLocal[p], q)
+			}
 		})
 	}
 
-	// 3. State Metadata: all states get nonTerminalOutcome; terminal states get baseOutcome
+	// 3. State Metadata: all states nonTerminalOutcome; terminal states get baseOutcome
 	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
-
-	for p := uint64(0); p < numStates; p++ {
-		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
+	for i := uint64(0); i < numStates; i++ {
+		outcomes[i] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome}
 	}
-
-	for p := positionID(1); p <= pm.maxPos; p++ {
+	for _, p := range localPositions {
+		local := globalToLocal[p]
 		var annPtr *AnnotationID
 		if a, ok := pm.annByPos[p]; ok {
 			val := a
 			annPtr = &val
 		}
-		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome, Annotation: annPtr}
+		outcomes[local] = AnnotatedOutcome[TOutcome]{Value: nonTerminalOutcome, Annotation: annPtr}
 	}
-
 	if info.nullable {
 		outcomes[0] = AnnotatedOutcome[TOutcome]{Value: baseOutcome}
 	}
-
-	// 4. Terminal positions (last set) get the match outcome
 	info.last.iter(func(p positionID) {
-		var annPtr *AnnotationID
-		if a, ok := pm.annByPos[p]; ok {
-			val := a
-			annPtr = &val
+		if local, ok := globalToLocal[p]; ok {
+			var annPtr *AnnotationID
+			if a, ok := pm.annByPos[p]; ok {
+				val := a
+				annPtr = &val
+			}
+			outcomes[local] = AnnotatedOutcome[TOutcome]{Value: baseOutcome, Annotation: annPtr}
 		}
-		outcomes[p] = AnnotatedOutcome[TOutcome]{Value: baseOutcome, Annotation: annPtr}
 	})
 
 	return autarch.NFACreate(
@@ -474,6 +487,20 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 		outcomes,
 		ctx.indexer,
 	)
+}
+
+// buildLocalPositions returns a sorted slice of position IDs that belong to this pattern
+// (keys of pm.symByPos). Used so NFA state count depends only on local position count.
+func buildLocalPositions(pm posMetadataMap) []positionID {
+	if len(pm.symByPos) == 0 {
+		return nil
+	}
+	out := make([]positionID, 0, len(pm.symByPos))
+	for p := range pm.symByPos {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // ------------------------------------------------------------ SUPPORT CODE

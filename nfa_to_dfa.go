@@ -121,6 +121,17 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 	// Old behavior sizing hint: n^2 (not tight, but consistent with prior).
 	maxDFAStates := nfaStateCount * nfaStateCount
 
+	worklistBytes := NFAToDFAWorklistBytesRequired(nfaStateCount)
+	if worklistBytes > uint64(maxMem) {
+		panic(fmt.Errorf(
+			"NFA->DFA worklist would exceed temp limit: nfa_states=%d worklist_capacity=%d estimated_bytes=%s max_temp=%s",
+			nfaStateCount,
+			maxDFAStates,
+			formatting.FormatMemoryBytes(worklistBytes),
+			formatting.FormatMemoryBytes(uint64(maxMem)),
+		))
+	}
+
 	worklist, _ := memarch.MemArchQueueCreate[dfaStateSubset](
 		func(sz, al uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocHandle, sz, al)
@@ -200,9 +211,13 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 	)
 }
 
-// ---------------------------------------------------------------------
-// HELPERS
-// ---------------------------------------------------------------------
+// NFAToDFAWorklistBytesRequired returns the number of bytes required for the
+// subset-construction worklist queue given an NFA state count (capacity n²).
+// Use this to check against maxMem before calling NFAToDFA or to report diagnostics.
+func NFAToDFAWorklistBytesRequired(nfaStateCount uint64) uint64 {
+	maxDFAStates := nfaStateCount * nfaStateCount
+	return memstruct.QueueRequiredBytesGet[dfaStateSubset](maxDFAStates)
+}
 
 func computeMove[TS, TO any](
 	nfa *NFA[TS, TO],
