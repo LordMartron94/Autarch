@@ -94,10 +94,7 @@ func NFACreate[TObservation, TStateOutcome any](
 	validateAlphabet(alphabet, "nfa")
 
 	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
-
-	for i := uint64(0); i < numStates; i++ {
-		memstruct.ArraySetAtUnsafe(outcomeTable, i, outcomes[i])
-	}
+	memstruct.ArraySetFromSliceUnsafe(outcomeTable, outcomes)
 
 	transitionTable := make(map[[2]uint64][]uint64)
 	for _, transition := range transitions {
