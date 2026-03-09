@@ -712,6 +712,12 @@ func unrollBoundedRepeat[TObs any](sub *RegulaAST[TObs], min, max int, ann *Anno
 		return buildOptionalChain(sub, max, ann)
 	}
 
+	// Exact repeat (min==max): no optional part; return only the fixed chain so Glushkov
+	// last-set and follow sets are correct (concat with epsilon can affect accepting positions).
+	if min == max {
+		return concatChain(sub, min, nil, ann)
+	}
+
 	fixedPart := concatChain(sub, min, nil, ann)
 	optionalPart := unrollBoundedRepeat(sub, 0, max-min, ann)
 
