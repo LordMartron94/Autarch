@@ -43,21 +43,25 @@ const (
 LLCompiler translates a Context-Free Grammar into a PDA transition table (NPDA or DPDA).
 
 In MODE_DPDA, ComputeAnalysis is used to build predictive sets so each (non-terminal, lookahead)
-has at most one production. In MODE_NPDA, expansions are driven by epsilon only. Internal
-state IDs (StateInit, StateLoop, StateAccept plus synthetic states) and stack symbol IDs
-are assigned during Compile. Use CompileNPDA or CompileDPDA for a full automaton; use
-CompilerCreate and Compile for transitions and a debug map only.
+has at most one production. In MODE_NPDA, expansions are driven by epsilon only. Terminals
+in the grammar are of type TObservation; the indexer resolves them to alphabet symbol IDs
+at compile time (and at run time when the PDA runs). No client-side TObservation→uint64
+mapping is required. Internal state IDs and stack symbol IDs are assigned during Compile.
+Use CompileNPDA or CompileDPDA for a full automaton; use CompilerCreate and Compile for
+transitions and a debug map only.
 */
-type LLCompiler struct {
-	grammar *Grammar[uint64]
+type LLCompiler[TObservation comparable] struct {
+	grammar *Grammar[TObservation]
 	mode    CompilerMode
+	indexer autarch.SymbolIndexer[TObservation]
 
 	// Predictive analysis (populated only in DPDA mode)
-	analysis *GrammarAnalysis[uint64]
+	analysis *GrammarAnalysis[TObservation]
 
 	// Registries to assign unique IDs to grammar symbols
-	nextStackID autarch.StackSymbolID
-	symbolMap   map[string]autarch.StackSymbolID
+	nextStackID          autarch.StackSymbolID
+	symbolMap            map[string]autarch.StackSymbolID
+	terminalToStackID   map[TObservation]autarch.StackSymbolID
 
 	terminalIDs []autarch.StackSymbolID
 
@@ -66,28 +70,34 @@ type LLCompiler struct {
 }
 
 /*
-CompilerCreate allocates an LL compiler for the given grammar and mode.
+CompilerCreate allocates an LL compiler for the given grammar, mode, and indexer.
 
 In MODE_DPDA, ComputeAnalysis is run to populate FIRST/FOLLOW for predictive sets.
-Grammar must use uint64 as TTokenID (terminal token IDs) for compatibility with
-autarch stack symbol IDs and indexer.
+Terminals in the grammar are TObservation; the indexer maps each to symbol IDs for
+transition keys and is used again at run time by the PDA. The client supplies
+alphabet + indexer (same as for DFA/NFA); no manual TObservation→uint64 mapping.
 
 Time complexity: O(1) for MODE_NPDA; O(grammar size) for MODE_DPDA (ComputeAnalysis)
 Space complexity: O(grammar + analysis)
 */
-func CompilerCreate(grammar *Grammar[uint64], mode CompilerMode) *LLCompiler {
-	c := &LLCompiler{
-		grammar:     grammar,
-		mode:        mode,
-		nextStackID: BottomMarkerID + 1,
-		symbolMap:   make(map[string]autarch.StackSymbolID),
-		transitions: make([]autarch.PDATransition, 0),
-		nextStateID: StateAccept + 1,
-		terminalIDs: make([]autarch.StackSymbolID, 0),
+func CompilerCreate[TObservation comparable](
+	grammar *Grammar[TObservation],
+	mode CompilerMode,
+	indexer autarch.SymbolIndexer[TObservation],
+) *LLCompiler[TObservation] {
+	c := &LLCompiler[TObservation]{
+		grammar:             grammar,
+		mode:                mode,
+		indexer:             indexer,
+		nextStackID:         BottomMarkerID + 1,
+		symbolMap:           make(map[string]autarch.StackSymbolID),
+		terminalToStackID:   make(map[TObservation]autarch.StackSymbolID),
+		transitions:         make([]autarch.PDATransition, 0),
+		nextStateID:         StateAccept + 1,
+		terminalIDs:         make([]autarch.StackSymbolID, 0),
 	}
 
 	if mode == MODE_DPDA {
-		// Assuming Contexta's ComputeAnalysis is available to generate FIRST/FOLLOW sets
 		c.analysis = ComputeAnalysis(grammar)
 	}
 
@@ -111,7 +121,7 @@ Prerequisites:
 Edge cases:
 - In DPDA mode, acceptance transition uses Epsilon on bottom marker when input is fully consumed
 */
-func (c *LLCompiler) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string) {
+func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string) {
 
 	startStackID := c.getNonTerminalID(c.grammar.StartSymbol)
 
@@ -150,12 +160,15 @@ func (c *LLCompiler) Compile() ([]autarch.PDATransition, map[autarch.StackSymbol
 	for name, id := range c.symbolMap {
 		resolutionMap[id] = name
 	}
+	for obs, id := range c.terminalToStackID {
+		resolutionMap[id] = fmt.Sprint(obs)
+	}
 	resolutionMap[BottomMarkerID] = "$BOTTOM"
 
 	return c.transitions, resolutionMap
 }
 
-func (c *LLCompiler) compileRules() {
+func (c *LLCompiler[TObservation]) compileRules() {
 	for nonTerminalName, rule := range c.grammar.Rules {
 		ntID := c.getNonTerminalID(nonTerminalName)
 
@@ -165,7 +178,7 @@ func (c *LLCompiler) compileRules() {
 	}
 }
 
-func (c *LLCompiler) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[uint64]) {
+func (c *LLCompiler[TObservation]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation]) {
 	symbols := prod.Symbols
 	k := len(symbols)
 
@@ -247,9 +260,10 @@ func (c *LLCompiler) compileProduction(ntName string, ntID autarch.StackSymbolID
 	}
 }
 
-// computePredictiveSet returns FIRST(prod) U FOLLOW(ntName) if prod is nullable.
-func (c *LLCompiler) computePredictiveSet(ntName string, prod Production[uint64]) []uint64 {
-	firstSet := make(TokenSet[uint64])
+// computePredictiveSet returns input symbol IDs (uint64) for transition keys:
+// FIRST(prod) ∪ FOLLOW(ntName) if prod is nullable, resolved via the indexer.
+func (c *LLCompiler[TObservation]) computePredictiveSet(ntName string, prod Production[TObservation]) []uint64 {
+	firstSet := make(TokenSet[TObservation])
 	isNullable := true
 
 	for _, sym := range prod.Symbols {
@@ -257,7 +271,8 @@ func (c *LLCompiler) computePredictiveSet(ntName string, prod Production[uint64]
 			firstSet[sym.Token] = struct{}{}
 			isNullable = false
 			break
-		} else if sym.Type == SYMBOL_NON_TERMINAL {
+		}
+		if sym.Type == SYMBOL_NON_TERMINAL {
 			for t := range c.analysis.First[sym.Name] {
 				firstSet[t] = struct{}{}
 			}
@@ -274,44 +289,73 @@ func (c *LLCompiler) computePredictiveSet(ntName string, prod Production[uint64]
 		}
 	}
 
-	var tokens []uint64
-	for t := range firstSet {
-		tokens = append(tokens, t)
+	// Resolve each terminal in the set to alphabet symbol ID(s) via indexer
+	seen := make(map[uint64]struct{})
+	for obs := range firstSet {
+		syms := c.indexer(obs)
+		if len(syms) == 0 {
+			panic(fmt.Sprintf("grammar terminal %v not in alphabet (indexer returned no symbol)", obs))
+		}
+		for _, s := range syms {
+			seen[s.SymbolID] = struct{}{}
+		}
 	}
-	return tokens
+	out := make([]uint64, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
 }
 
-// resolveSymbolID maps a Contexta symbol to a StackSymbolID.
-// It also generates the "Match" consuming transitions for Terminals.
-func (c *LLCompiler) resolveSymbolID(sym Symbol[uint64]) autarch.StackSymbolID {
+// resolveSymbolID maps a Contexta symbol to a StackSymbolID and emits match transitions for terminals.
+func (c *LLCompiler[TObservation]) resolveSymbolID(sym Symbol[TObservation]) autarch.StackSymbolID {
 	if sym.Type == SYMBOL_NON_TERMINAL {
 		return c.getNonTerminalID(sym.Name)
 	}
+	if sym.Type == SYMBOL_EPSILON {
+		panic("resolveSymbolID: epsilon has no stack symbol ID")
+	}
 
-	tokenName := string(rune(sym.Token))
-	termID := c.getTerminalID(tokenName, sym.Token)
+	obs := sym.Token
+	syms := c.indexer(obs)
+	if len(syms) == 0 {
+		panic(fmt.Sprintf("grammar terminal %v not in alphabet (indexer returned no symbol)", obs))
+	}
+	if c.mode == MODE_DPDA && len(syms) != 1 {
+		panic(fmt.Sprintf("DPDA requires exactly one symbol per observation; indexer returned %d for %v", len(syms), obs))
+	}
+	inputID := syms[0].SymbolID
+	stackID := c.getTerminalStackID(obs)
 
-	if !c.hasMatchTransition(sym.Token, termID) {
+	if !c.hasMatchTransition(inputID, stackID) {
 		c.transitions = append(c.transitions, autarch.PDATransition{
 			Key: autarch.TransitionKey{
 				StateID:  StateLoop,
-				InputID:  sym.Token,
-				StackTop: termID,
+				InputID:  inputID,
+				StackTop: stackID,
 			},
 			Result: autarch.TransitionResult{
 				NextStateID: StateLoop,
 				StackOp:     autarch.STACK_POP,
 			},
 		})
-		c.terminalIDs = append(c.terminalIDs, termID)
+		c.terminalIDs = append(c.terminalIDs, stackID)
 	}
 
-	return termID
+	return stackID
 }
 
-// --- Internal ID Managers ---
+func (c *LLCompiler[TObservation]) getTerminalStackID(obs TObservation) autarch.StackSymbolID {
+	if id, exists := c.terminalToStackID[obs]; exists {
+		return id
+	}
+	id := c.nextStackID
+	c.nextStackID++
+	c.terminalToStackID[obs] = id
+	return id
+}
 
-func (c *LLCompiler) getNonTerminalID(name string) autarch.StackSymbolID {
+func (c *LLCompiler[TObservation]) getNonTerminalID(name string) autarch.StackSymbolID {
 	if id, exists := c.symbolMap[name]; exists {
 		return id
 	}
@@ -321,24 +365,13 @@ func (c *LLCompiler) getNonTerminalID(name string) autarch.StackSymbolID {
 	return id
 }
 
-func (c *LLCompiler) getTerminalID(name string, token uint64) autarch.StackSymbolID {
-	key := fmt.Sprintf("$TERM_%d", token)
-	if id, exists := c.symbolMap[key]; exists {
-		return id
-	}
-	id := c.nextStackID
-	c.nextStackID++
-	c.symbolMap[key] = id
-	return id
-}
-
-func (c *LLCompiler) allocateSyntheticState() uint64 {
+func (c *LLCompiler[TObservation]) allocateSyntheticState() uint64 {
 	id := c.nextStateID
 	c.nextStateID++
 	return id
 }
 
-func (c *LLCompiler) hasMatchTransition(inputID uint64, stackTop autarch.StackSymbolID) bool {
+func (c *LLCompiler[TObservation]) hasMatchTransition(inputID uint64, stackTop autarch.StackSymbolID) bool {
 	for _, t := range c.transitions {
 		if t.Key.StateID == StateLoop && t.Key.InputID == inputID && t.Key.StackTop == stackTop {
 			return true
@@ -350,9 +383,10 @@ func (c *LLCompiler) hasMatchTransition(inputID uint64, stackTop autarch.StackSy
 /*
 CompileNPDA compiles a Context-Free Grammar into a Non-Deterministic Pushdown Automaton.
 
-Uses pure epsilon branching for rule expansion (MODE_NPDA). alphabet and indexer must
-map observations to symbol IDs consistent with the grammar's terminal token IDs (uint64).
-acceptOutcome is stored in the accept state; other states get the zero value of TStateOutcome.
+Uses pure epsilon branching for rule expansion (MODE_NPDA). Terminals in the grammar
+are TObservation; the client supplies alphabet and indexer (same as for DFA/NFA). The
+indexer resolves observations to symbol IDs at compile time and at run time. No
+TToken→uint64 mapping is required. acceptOutcome is stored in the accept state.
 Limits (maxStackNodes, maxStackDepth, maxBranches, maxEpsilonSteps) are passed to NPDACreate.
 
 Use cases:
@@ -364,13 +398,13 @@ Space complexity: O(grammar + NPDA)
 
 Prerequisites:
 - grammar must be valid (Builder.Build or equivalent)
-- alphabet and indexer must use uint64 token IDs matching grammar terminals
+- alphabet and indexer must cover all terminals that appear in the grammar
 
 Edge cases:
 - Returns (npda, debugMap, nil); errors from NPDACreate are not currently returned
 */
-func CompileNPDA[TObservation, TStateOutcome any](
-	grammar *Grammar[uint64],
+func CompileNPDA[TObservation comparable, TStateOutcome any](
+	grammar *Grammar[TObservation],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
@@ -381,7 +415,7 @@ func CompileNPDA[TObservation, TStateOutcome any](
 	maxEpsilonSteps uint64,
 ) (*autarch.NPDA[TObservation, TStateOutcome], map[autarch.StackSymbolID]string, error) {
 
-	compiler := CompilerCreate(grammar, MODE_NPDA)
+	compiler := CompilerCreate(grammar, MODE_NPDA, indexer)
 	transitions, debugMap := compiler.Compile()
 
 	// Build the outcomes array.
@@ -409,12 +443,12 @@ func CompileNPDA[TObservation, TStateOutcome any](
 /*
 CompileDPDA compiles a Context-Free Grammar into an LL(1) Deterministic Pushdown Automaton.
 
-Uses FIRST/FOLLOW predictive sets (MODE_DPDA); the grammar must be LL(1). If any
-(state, input, stack) key would have more than one transition, DPDACreate returns
-an error and CompileDPDA wraps it as "grammar is not LL(1) compliant". alphabet,
-indexer, and acceptOutcome behave as in CompileNPDA. terminalIDs are the stack
-symbol IDs that represent terminals (used for lookahead consumption). maxEpsilonSteps
-limits consecutive epsilon moves to detect cycles.
+Uses FIRST/FOLLOW predictive sets (MODE_DPDA); the grammar must be LL(1). Terminals
+in the grammar are TObservation; the client supplies alphabet and indexer (same as
+for DFA/NFA). The indexer must return exactly one symbol per observation for
+determinism. No TToken→uint64 mapping is required. If any (state, input, stack) key
+would have more than one transition, DPDACreate returns an error and CompileDPDA
+wraps it as "grammar is not LL(1) compliant".
 
 Use cases:
 - Parsing LL(1) grammars in O(n) time with a single execution path
@@ -430,8 +464,8 @@ Prerequisites:
 Edge cases:
 - Returns error if DPDACreate fails (nondeterminism or epsilon/consuming conflict)
 */
-func CompileDPDA[TObservation, TStateOutcome any](
-	grammar *Grammar[uint64],
+func CompileDPDA[TObservation comparable, TStateOutcome any](
+	grammar *Grammar[TObservation],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
@@ -439,7 +473,7 @@ func CompileDPDA[TObservation, TStateOutcome any](
 	maxEpsilonSteps uint64,
 ) (*autarch.DPDA[TObservation, TStateOutcome], map[autarch.StackSymbolID]string, error) {
 
-	compiler := CompilerCreate(grammar, MODE_DPDA)
+	compiler := CompilerCreate(grammar, MODE_DPDA, indexer)
 	transitions, debugMap := compiler.Compile()
 
 	numStates := compiler.nextStateID

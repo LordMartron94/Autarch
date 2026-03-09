@@ -66,8 +66,10 @@ type Rule[TTokenID comparable] struct {
 Grammar is a Context-Free Grammar with a start symbol and a map of rules by non-terminal name.
 
 Rules is keyed by non-terminal name; each entry is a Rule with one or more productions.
-StartSymbol must be the name of a rule that exists in Rules. Token IDs in productions
-must match the lexer/observation type used when compiling to a PDA.
+StartSymbol must be the name of a rule that exists in Rules. Terminals in productions
+are of type TTokenID (the client's observation/token type). When compiling to a PDA,
+use pattern.CompilerCreate(grammar, mode, indexer) or pattern.CompileNPDA/CompileDPDA
+with the same alphabet and SymbolIndexer so the indexer resolves terminals to symbol IDs.
 
 Time complexity: O(1) for map lookup by name
 Space complexity: O(r + s) where r is rules, s is total symbols in all productions
@@ -125,8 +127,10 @@ func (b *Builder[TTokenID]) NonTerm(name string) Symbol[TTokenID] {
 /*
 Term creates a reference to a lexical token produced by the lexer (e.g., Regula).
 
-TTokenID must match the token type used when compiling the grammar to a PDA (e.g., uint64
-for pattern.CompileNPDA / pattern.CompileDPDA).
+The token type TTokenID is the same as the observation type used when compiling the
+grammar to a PDA. When compiling to NPDA/DPDA, pass the same alphabet and
+SymbolIndexer[TObservation]; the indexer resolves terminals to symbol IDs. No
+manual TTokenID→uint64 mapping is required.
 
 Time complexity: O(1)
 Space complexity: O(1)

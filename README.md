@@ -461,6 +461,7 @@ outcome, err := autarch.DPDARun(dpda, tokenStream, pattern.BottomMarkerID)
 
 - **`Grammar[TTokenID]`**, **`Rule`**, **`Production`**, **`Symbol`**, **`SymbolType`** (SYMBOL_TERMINAL, SYMBOL_NON_TERMINAL, SYMBOL_EPSILON) – grammar structures.
 - **`BuilderCreate`**, **`Builder`** – **`NonTerm`**, **`Term`**, **`Epsilon`**, **`Seq`**, **`Define`**, **`Build`** – define and validate a grammar.
+- **`ContextaDebugFormatter`**, **`ContextaDebugger`**, **`NewContextaDebugger`**, **`NewContextaCleanFormatter`** – human-readable grammar dumps (similar to Regula’s debugger). Use **`Grammar.DebugDump(formatter)`** for a one-liner.
 - **`GrammarAnalysis`**, **`TokenSet`**, **`ComputeAnalysis`** – FIRST/FOLLOW for LL(1).
 - **`CompilerCreate`**, **`LLCompiler`**, **`Compile`** – low-level compiler (MODE_NPDA / MODE_DPDA); **`CompileNPDA`**, **`CompileDPDA`** – build autarch NPDA/DPDA and optional debug map.
 - **`BottomMarkerID`**, **`StateInit`**, **`StateLoop`**, **`StateAccept`** – constants used by the compiler and automata.
