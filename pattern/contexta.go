@@ -52,14 +52,16 @@ type Production[TTokenID comparable] struct {
 Rule associates a non-terminal name with one or more productions (alternatives).
 
 The grammar expands this non-terminal by choosing one of the productions based on
-lookahead (DPDA/LL(1)) or by exploring all alternatives (NPDA).
+lookahead (DPDA/LL(1)) or by exploring all alternatives (NPDA). AnnotationID is
+optional; when set, it is carried into PDA accept outcomes (e.g. for rule identity).
 
 Time complexity: O(1) for field access
 Space complexity: O(p) where p is total productions and their symbols
 */
 type Rule[TTokenID comparable] struct {
-	NonTerminal string
-	Productions []Production[TTokenID]
+	NonTerminal  string
+	Productions  []Production[TTokenID]
+	AnnotationID *AnnotationID
 }
 
 /*
@@ -188,6 +190,25 @@ func (b *Builder[TTokenID]) Define(nonTerminal string, productions ...Production
 		NonTerminal: nonTerminal,
 		Productions: productions,
 	}
+}
+
+/*
+RuleAnnotation sets the optional annotation for an already-defined rule.
+
+Use after Define. When the grammar is compiled to a PDA, the start rule's
+annotation (if set) is attached to the accept-state outcome. Panics if the
+rule does not exist.
+
+Time complexity: O(1)
+Space complexity: O(1)
+*/
+func (b *Builder[TTokenID]) RuleAnnotation(ruleName string, id AnnotationID) {
+	rule, exists := b.grammar.Rules[ruleName]
+	if !exists {
+		panic(fmt.Sprintf("Rule '%s' is not defined", ruleName))
+	}
+	idCopy := id
+	rule.AnnotationID = &idCopy
 }
 
 /*

@@ -373,7 +373,11 @@ func DFARun[TObservation, TStateOutcome any](
 		symbols := dfa.indexer(observation)
 		if len(symbols) == 0 {
 			var zero TStateOutcome
-			return zero, fmt.Errorf("invalid symbol: %v", observation)
+			return zero, &AutomatonError{
+				Kind:      AutomatonErrorInvalidSymbolFinite,
+				Automaton: "DFA",
+				Message:   fmt.Sprintf("invalid symbol: %v", observation),
+			}
 		}
 
 		if len(symbols) != 1 {
@@ -847,7 +851,11 @@ func DFAStep[TObservation, TStateOutcome any](
 	symbols := dfa.indexer(observation)
 	if len(symbols) == 0 {
 		var zero uint64
-		return zero, fmt.Errorf("invalid symbol: %v", observation)
+		return zero, &AutomatonError{
+			Kind:      AutomatonErrorInvalidSymbolFinite,
+			Automaton: "DFA",
+			Message:   fmt.Sprintf("invalid symbol: %v", observation),
+		}
 	}
 
 	if len(symbols) != 1 {

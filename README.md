@@ -163,7 +163,7 @@ Nondeterministic Pushdown Automaton with a stack for context-free language recog
 - **`StackSymbolID`** – Identifier for symbols on the stack (distinct from input alphabet).
 - **`StackOperation`** – `STACK_POP`, `STACK_PUSH`, `STACK_REPLACE`.
 - **`TransitionKey`** – (StateID, InputID, StackTop) keys into the transition table.
-- **`TransitionResult`** – NextStateID plus stack op and optional push symbol.
+- **`TransitionResult`** – NextStateID plus **PushSymbolIDs** (non-empty = pop once then push all; empty/nil = pop only via STACK_POP).
 - **`PDATransition`** – Single edge: Key + Result (shared by NPDA and DPDA).
 - **`NPDAConfig`** – One active (state, stack) configuration; use `NPDAConfigStackRead` and `NPDAConfigFormat` for debugging.
 
@@ -203,24 +203,24 @@ const (
     stackB      autarch.StackSymbolID = 2
 )
 
-// Transitions: (state, input, stack_top) -> (next_state, stack_op, push_symbol)
-// Example: state 0, read 'a', top A -> state 0, push B
+// Transitions: (state, input, stack_top) -> (next_state, PushSymbolIDs or pop)
+// Push: set PushSymbolIDs (one or more symbols); pop: leave PushSymbolIDs empty and use STACK_POP
 transitions := []autarch.PDATransition{
     {
         Key:    autarch.TransitionKey{StateID: 0, InputID: 0, StackTop: stackBottom},
-        Result: autarch.TransitionResult{NextStateID: 0, StackOp: autarch.STACK_PUSH, PushSymbolID: stackA},
+        Result: autarch.TransitionResult{NextStateID: 0, PushSymbolIDs: []autarch.StackSymbolID{stackA}},
     },
     {
         Key:    autarch.TransitionKey{StateID: 0, InputID: 0, StackTop: stackA},
-        Result: autarch.TransitionResult{NextStateID: 0, StackOp: autarch.STACK_PUSH, PushSymbolID: stackB},
+        Result: autarch.TransitionResult{NextStateID: 0, PushSymbolIDs: []autarch.StackSymbolID{stackB}},
     },
     {
         Key:    autarch.TransitionKey{StateID: 0, InputID: 1, StackTop: stackB},
-        Result: autarch.TransitionResult{NextStateID: 0, StackOp: autarch.STACK_POP, PushSymbolID: 0},
+        Result: autarch.TransitionResult{NextStateID: 0, StackOp: autarch.STACK_POP},
     },
     {
         Key:    autarch.TransitionKey{StateID: 0, InputID: 1, StackTop: stackA},
-        Result: autarch.TransitionResult{NextStateID: 1, StackOp: autarch.STACK_POP, PushSymbolID: 0},
+        Result: autarch.TransitionResult{NextStateID: 1, StackOp: autarch.STACK_POP},
     },
 }
 
@@ -249,12 +249,26 @@ result, err := autarch.NPDARun(npda, input, stackBottom)
 Deterministic Pushdown Automaton with a single execution path and a Go-slice stack (no slab allocator). Exactly one transition per (state, input symbol, stack top); the indexer must return exactly one symbol per observation. Used for LL(1) parsing; epsilon transitions perform predictive expansion, and input is consumed only when a terminal is matched.
 
 **Key Functions:**
-- **`DPDACreate`** – Build DPDA from alphabet, start state, transitions, outcomes, indexer, terminal stack symbol IDs, and max epsilon steps. Returns error if transitions are nondeterministic.
-- **`DPDARun`** – Run on input with initial stack symbol; returns the single outcome of the final state or an error (syntax error, ambiguous indexer, or stack empty before end of input).
+- **`DPDACreate`** – Build DPDA from alphabet, start state, transitions, outcomes, indexer, terminal stack symbol IDs, and max epsilon steps. Returns `*AutomatonError` with kind `AutomatonErrorNondeterminismDPDA` when transitions are nondeterministic (duplicate keys or epsilon/consuming conflict).
+- **`DPDARun`** – Run on input with initial stack symbol; returns the single outcome of the final state or an error. Runtime failures are reported as `*AutomatonError` with kinds such as `AutomatonErrorIndexerAmbiguityDPDA` or `AutomatonErrorSyntaxDPDA`.
 
 **Performance:** O(n) time and O(d) stack space where n is input length and d is derivation depth. Zero manual allocations in the hot path.
 
 **Typical use:** Build via `pattern.CompileDPDA` from a Contexta grammar; see **Contexta (Context-Free Grammar)** below.
+
+### Structured Automaton Errors
+
+All automata in this package may return a structured `*AutomatonError` from constructor and execution paths. The error implements Go's `error` interface while exposing a machine-readable `Kind` and optional payloads so callers do not need to parse human-readable strings.
+
+- **`AutomatonErrorKind`** enumerates high-level categories (for example: DPDA nondeterminism, DPDA syntax error, NPDA branch limit exceeded, invalid input symbol for DFA/NFA).
+- **`AutomatonError`** carries:
+  - `Kind` – error classification
+  - `Automaton` – component name (`"DFA"`, `"NFA"`, `"DPDA"`, `"NPDA"`)
+  - `Message` – formatted summary for logs
+  - Optional DPDA payloads (`DPDANondeterminismConflict`, `DPDARuntimeContext`)
+  - Optional symbol context (`InputID`)
+
+Callers can type-assert `err.(*AutomatonError)` to branch on `Kind` and feed structured diagnostics into higher layers (for example: Contexta, Syntaxa, editor integrations).
 
 ### Outcome Resolution
 
@@ -296,7 +310,7 @@ dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, customResolution)
 
 **`SymbolIndexer[TObservation]`**: Function type mapping observations to symbols.
 
-**NPDA stack types:** `StackSymbolID`, `StackOperation` (STACK_POP, STACK_PUSH, STACK_REPLACE), `TransitionKey`, `TransitionResult`, `PDATransition` (shared by NPDA and DPDA), `NPDAConfig`. Use `EpsilonSymbolID` for epsilon transitions in PDAs.
+**NPDA stack types:** `StackSymbolID`, `StackOperation` (STACK_POP for pop-only; push uses `PushSymbolIDs`), `TransitionKey`, `TransitionResult`, `PDATransition` (shared by NPDA and DPDA), `NPDAConfig`. Use `EpsilonSymbolID` for epsilon transitions in PDAs.
 
 ## Pattern Builder (regula)
 
@@ -402,10 +416,11 @@ The `autarch/pattern` package also provides **Contexta**, a DSL for defining con
 ### Key Concepts
 
 - **Grammar**: Start symbol + map of rules (non-terminal → productions).
-- **Rule**: One non-terminal with one or more productions (alternatives).
+- **Rule**: One non-terminal with one or more productions (alternatives). Optional **AnnotationID** (set via **`RuleAnnotation(ruleName, id)`** after `Define`) is carried into the accept-state outcome when compiling to PDA.
 - **Production**: Ordered sequence of symbols (terminals, non-terminals, or epsilon).
-- **Builder**: Fluent API to define rules with `BuilderCreate`, `NonTerm`, `Term`, `Epsilon`, `Seq`, `Define`, and `Build`.
+- **Builder**: Fluent API to define rules with `BuilderCreate`, `NonTerm`, `Term`, `Epsilon`, `Seq`, `Define`, `RuleAnnotation`, and `Build`.
 - **GrammarAnalysis**: FIRST and FOLLOW sets (from `ComputeAnalysis`) used for LL(1) predictive parsing.
+- **Annotated outcomes**: `CompileNPDA` and `CompileDPDA` return automata with state outcome type **`AnnotatedOutcome[TOutcome]`** (same as Regula/NFA/DFA). `NPDARun` returns `[]AnnotatedOutcome[TOutcome]`; `DPDARun` returns a single `AnnotatedOutcome[TOutcome]`. The accept state’s annotation comes from the start rule’s `AnnotationID` (if set).
 
 ### Compilation Modes
 
@@ -442,25 +457,26 @@ alphabet := []autarch.SymbolDefinition[uint64]{ /* ... */ }
 indexer := autarch.SymbolIndexerBuild(alphabet)
 
 // Compile to LL(1) DPDA (returns error if grammar is not LL(1))
+// Outcome type is pattern.AnnotatedOutcome[T]; accept state gets start rule's annotation if set via RuleAnnotation.
 dpda, debugMap, err := pattern.CompileDPDA(
     grammar,
     allocFn,
     alphabet,
     indexer,
-    "accept",  // outcome for accept state
+    "accept",  // outcome value for accept state
     256,       // maxEpsilonSteps
 )
 if err != nil { /* e.g. "grammar is not LL(1) compliant" */ }
 
 // Run on token stream (e.g., after lexing)
 outcome, err := autarch.DPDARun(dpda, tokenStream, pattern.BottomMarkerID)
-// debugMap maps autarch.StackSymbolID to human-readable names for debugging
+// outcome is pattern.AnnotatedOutcome with Value and optional Annotation; debugMap maps StackSymbolID to names
 ```
 
 ### Contexta Types and Functions
 
-- **`Grammar[TTokenID]`**, **`Rule`**, **`Production`**, **`Symbol`**, **`SymbolType`** (SYMBOL_TERMINAL, SYMBOL_NON_TERMINAL, SYMBOL_EPSILON) – grammar structures.
-- **`BuilderCreate`**, **`Builder`** – **`NonTerm`**, **`Term`**, **`Epsilon`**, **`Seq`**, **`Define`**, **`Build`** – define and validate a grammar.
+- **`Grammar[TTokenID]`**, **`Rule`** (with optional **AnnotationID**), **`Production`**, **`Symbol`**, **`SymbolType`** – grammar structures.
+- **`BuilderCreate`**, **`Builder`** – **`NonTerm`**, **`Term`**, **`Epsilon`**, **`Seq`**, **`Define`**, **`RuleAnnotation`**, **`Build`** – define and validate a grammar.
 - **`ContextaDebugFormatter`**, **`ContextaDebugger`**, **`NewContextaDebugger`**, **`NewContextaCleanFormatter`** – human-readable grammar dumps (similar to Regula’s debugger). Use **`Grammar.DebugDump(formatter)`** for a one-liner.
 - **`GrammarAnalysis`**, **`TokenSet`**, **`ComputeAnalysis`** – FIRST/FOLLOW for LL(1).
 - **`CompilerCreate`**, **`LLCompiler`**, **`Compile`** – low-level compiler (MODE_NPDA / MODE_DPDA); **`CompileNPDA`**, **`CompileDPDA`** – build autarch NPDA/DPDA and optional debug map.
@@ -519,7 +535,7 @@ Computed using depth-first search with a stack-based approach. The algorithm han
 
 ### NPDA Execution
 
-The NPDA uses a slab allocator for stack nodes; it is reset at the start of each `NPDARun`, so no stack memory persists between runs. Epsilon closure is computed with cycle detection (hash of state, stack depth, stack top) and enforced limits on consecutive epsilon steps and stack depth. Branch count is capped by `maxBranches` to avoid exponential blowup on highly ambiguous grammars.
+The NPDA uses a slab allocator for stack nodes; it is reset at the start of each `NPDARun`, so no stack memory persists between runs. A transition may specify **PushSymbolIDs** (one or more symbols); execution pops once then pushes each in order (top = last element). Epsilon closure is computed with cycle detection (hash of state, stack depth, stack top) and enforced limits on consecutive epsilon steps and stack depth. Branch count is capped by `maxBranches` to avoid exponential blowup on highly ambiguous grammars.
 
 ### DPDA Execution
 

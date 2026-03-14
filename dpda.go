@@ -5,6 +5,7 @@ import (
 	"memarch"
 	"memcore"
 	"memstruct"
+	"strings"
 )
 
 // ------------------------------------------------------------- DPDA STRUCT
@@ -82,12 +83,18 @@ func DPDACreate[TObservation, TStateOutcome any](
 	memstruct.ArraySetFromSliceUnsafe(outcomeTable, outcomes)
 
 	transitionTable := make(map[TransitionKey]TransitionResult)
+	var conflicts []DPDANondeterminismConflict
 
 	for _, t := range transitions {
 		if _, exists := transitionTable[t.Key]; exists {
-			return nil, fmt.Errorf("nondeterminism detected: multiple transitions for state %d, input %d, stack %d", t.Key.StateID, t.Key.InputID, t.Key.StackTop)
+			conflicts = append(conflicts, DPDANondeterminismConflict{
+				StateID:  t.Key.StateID,
+				InputID:  t.Key.InputID,
+				StackTop: t.Key.StackTop,
+			})
+		} else {
+			transitionTable[t.Key] = t.Result
 		}
-		transitionTable[t.Key] = t.Result
 	}
 
 	for key := range transitionTable {
@@ -96,11 +103,29 @@ func DPDACreate[TObservation, TStateOutcome any](
 		}
 		epsilonKey := TransitionKey{StateID: key.StateID, InputID: EpsilonSymbolID, StackTop: key.StackTop}
 		if _, conflict := transitionTable[epsilonKey]; conflict {
-			return nil, fmt.Errorf("nondeterminism detected: conflict between epsilon and consuming transition at state %d, stack %d", key.StateID, key.StackTop)
+			conflicts = append(conflicts, DPDANondeterminismConflict(key))
 		}
 	}
 
-	// Map the terminal IDs for O(1) lookups during execution
+	if len(conflicts) > 0 {
+		builder := strings.Builder{}
+		builder.WriteString("nondeterminism detected in DPDA transitions")
+		for _, c := range conflicts {
+			builder.WriteString(fmt.Sprintf(
+				"\n- multiple transitions for state %d, input %d, stack %d",
+				c.StateID,
+				c.InputID,
+				c.StackTop,
+			))
+		}
+		return nil, &AutomatonError{
+			Kind:          AutomatonErrorNondeterminismDPDA,
+			Automaton:     "DPDA",
+			Message:       builder.String(),
+			DPDAConflicts: conflicts,
+		}
+	}
+
 	termMap := make(map[StackSymbolID]struct{}, len(terminalIDs))
 	for _, id := range terminalIDs {
 		termMap[id] = struct{}{}
@@ -169,8 +194,20 @@ func DPDARun[TObservation, TStateOutcome any](
 		observation := input[inputIdx]
 		symbols := dpda.indexer(observation)
 		if len(symbols) != 1 {
-			// A DPDA requires exactly one unambiguous token per observation
-			return nil, fmt.Errorf("DPDA requires unambiguous indexer, got %d symbols for observation", len(symbols))
+			return nil, &AutomatonError{
+				Kind:      AutomatonErrorIndexerAmbiguityDPDA,
+				Automaton: "DPDA",
+				Message: fmt.Sprintf(
+					"DPDA requires unambiguous indexer, got %d symbols for observation",
+					len(symbols),
+				),
+				DPDAContext: &DPDARuntimeContext{
+					Position:    inputIdx,
+					StateID:     currentState,
+					StackTop:    stack[len(stack)-1],
+					Observation: observation,
+				},
+			}
 		}
 		inputID := symbols[0].SymbolID
 
@@ -180,7 +217,22 @@ func DPDARun[TObservation, TStateOutcome any](
 
 		result, exists := dpda.transitionTable[key]
 		if !exists {
-			return nil, fmt.Errorf("syntax error: unexpected token %v at state %d, stack top %d", observation, currentState, topSymbol)
+			return nil, &AutomatonError{
+				Kind:      AutomatonErrorSyntaxDPDA,
+				Automaton: "DPDA",
+				Message: fmt.Sprintf(
+					"syntax error: unexpected token %v at state %d, stack top %d",
+					observation,
+					currentState,
+					topSymbol,
+				),
+				DPDAContext: &DPDARuntimeContext{
+					Position:    inputIdx,
+					StateID:     currentState,
+					StackTop:    topSymbol,
+					Observation: observation,
+				},
+			}
 		}
 
 		// Check if we are matching a Terminal BEFORE we alter the stack
@@ -238,13 +290,11 @@ func processEpsilons[TObservation, TStateOutcome any](
 }
 
 func executeStackOp(stack []StackSymbolID, result TransitionResult) (uint64, []StackSymbolID) {
-	switch result.StackOp {
-	case STACK_POP:
+	if len(result.PushSymbolIDs) > 0 {
 		stack = stack[:len(stack)-1]
-	case STACK_REPLACE:
-		stack[len(stack)-1] = result.PushSymbolID
-	case STACK_PUSH:
-		stack = append(stack, result.PushSymbolID)
+		stack = append(stack, result.PushSymbolIDs...)
+	} else {
+		stack = stack[:len(stack)-1]
 	}
 	return result.NextStateID, stack
 }

@@ -99,16 +99,18 @@ type TransitionKey struct {
 /*
 TransitionResult describes the effect of one transition: next state and stack operation.
 
-NextStateID is the state after the transition. StackOp and PushSymbolID define
-how the stack is updated (pop, push, or replace top).
+NextStateID is the state after the transition. When PushSymbolIDs is non-empty
+(one or more symbols), pop once then push each in order so that top of stack
+equals the last element. When PushSymbolIDs is nil or empty, StackOp must be
+STACK_POP (pop only).
 
-Time complexity: O(1)
-Space complexity: O(1)
+Time complexity: O(len(PushSymbolIDs)) when PushSymbolIDs is used
+Space complexity: O(1) plus slice when PushSymbolIDs is set
 */
 type TransitionResult struct {
-	NextStateID  uint64
-	StackOp      StackOperation
-	PushSymbolID StackSymbolID
+	NextStateID   uint64
+	StackOp       StackOperation
+	PushSymbolIDs []StackSymbolID // If non-empty, pop once then push all; top = last element (1 symbol = slice of 1)
 }
 
 /*
@@ -480,7 +482,7 @@ func NPDARun[TObservation, TStateOutcome any](
 
 	activeConfigs := initializeConfigs(npda, initialStackSymbol)
 
-	for _, observation := range input {
+	for idx, observation := range input {
 		activeConfigs = computeEpsilonClosure(npda, activeConfigs)
 
 		if len(activeConfigs) == 0 {
@@ -495,7 +497,16 @@ func NPDARun[TObservation, TStateOutcome any](
 
 		// Enforce maximum branch limit to prevent exponential explosion
 		if uint64(len(activeConfigs)) > npda.maxBranches {
-			return nil, fmt.Errorf("NPDA branch limit exceeded: %d > %d", len(activeConfigs), npda.maxBranches)
+			return nil, &AutomatonError{
+				Kind:      AutomatonErrorBranchLimitNPDA,
+				Automaton: "NPDA",
+				Message: fmt.Sprintf(
+					"NPDA branch limit exceeded: %d > %d at input index %d",
+					len(activeConfigs),
+					npda.maxBranches,
+					idx,
+				),
+			}
 		}
 	}
 
@@ -513,7 +524,11 @@ func stepAllConfigs[TObservation, TStateOutcome any](
 
 	symbols := npda.indexer(observation)
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("invalid symbol: %v", observation)
+		return nil, &AutomatonError{
+			Kind:      AutomatonErrorInvalidSymbolNPDA,
+			Automaton: "NPDA",
+			Message:   fmt.Sprintf("invalid symbol: %v", observation),
+		}
 	}
 
 	var nextConfigs []NPDAConfig
@@ -624,16 +639,13 @@ func executeTransitionResult[TObservation, TStateOutcome any](
 		nextDepth = config.StackDepth - 1
 	}
 
-	switch result.StackOp {
-	case STACK_POP:
-		// Baseline already represents a pop
-	case STACK_REPLACE:
-		nextStack = allocateStackNode(npda.stackAllocator, result.PushSymbolID, nextStack)
-		nextDepth++
-	case STACK_PUSH:
-		nextStack = allocateStackNode(npda.stackAllocator, result.PushSymbolID, config.StackTop)
-		nextDepth = config.StackDepth + 1
+	if len(result.PushSymbolIDs) > 0 {
+		for _, sym := range result.PushSymbolIDs {
+			nextStack = allocateStackNode(npda.stackAllocator, sym, nextStack)
+			nextDepth++
+		}
 	}
+	// Else: pop only (baseline already applied above)
 
 	streak := uint64(0)
 	if isEpsilon {

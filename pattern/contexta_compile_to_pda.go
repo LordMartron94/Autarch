@@ -6,6 +6,61 @@ import (
 	"memarch"
 )
 
+/*
+ContextaGrammarError wraps lower-level automaton and compiler errors with
+grammar-aware metadata.
+
+Use cases:
+- Reporting LL(1) violations and predictive set conflicts with rule names
+- Exposing stack symbol / rule bindings for tooling
+
+Time complexity: O(1)
+Space complexity: O(1)
+*/
+type ContextaGrammarError struct {
+	Engine      string
+	Underlying  error
+	Automaton   *autarch.AutomatonError
+	RuleName    string
+	StackSymbol autarch.StackSymbolID
+	InputID     uint64
+}
+
+// Error implements the error interface.
+func (e *ContextaGrammarError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Underlying != nil {
+		return e.Underlying.Error()
+	}
+	return "contexta grammar error"
+}
+
+func wrapContextaGrammarError(
+	engine string,
+	src error,
+	inputID uint64,
+) error {
+	if src == nil {
+		return nil
+	}
+
+	var autoErr *autarch.AutomatonError
+	if as, ok := src.(*autarch.AutomatonError); ok {
+		autoErr = as
+	}
+
+	err := &ContextaGrammarError{
+		Engine:     engine,
+		Underlying: src,
+		Automaton:  autoErr,
+		InputID:    inputID,
+	}
+
+	return err
+}
+
 const (
 	StateInit   uint64 = 0
 	StateLoop   uint64 = 1
@@ -59,9 +114,9 @@ type LLCompiler[TObservation comparable] struct {
 	analysis *GrammarAnalysis[TObservation]
 
 	// Registries to assign unique IDs to grammar symbols
-	nextStackID          autarch.StackSymbolID
-	symbolMap            map[string]autarch.StackSymbolID
-	terminalToStackID   map[TObservation]autarch.StackSymbolID
+	nextStackID       autarch.StackSymbolID
+	symbolMap         map[string]autarch.StackSymbolID
+	terminalToStackID map[TObservation]autarch.StackSymbolID
 
 	terminalIDs []autarch.StackSymbolID
 
@@ -86,15 +141,15 @@ func CompilerCreate[TObservation comparable](
 	indexer autarch.SymbolIndexer[TObservation],
 ) *LLCompiler[TObservation] {
 	c := &LLCompiler[TObservation]{
-		grammar:             grammar,
-		mode:                mode,
-		indexer:             indexer,
-		nextStackID:         BottomMarkerID + 1,
-		symbolMap:           make(map[string]autarch.StackSymbolID),
-		terminalToStackID:   make(map[TObservation]autarch.StackSymbolID),
-		transitions:         make([]autarch.PDATransition, 0),
-		nextStateID:         StateAccept + 1,
-		terminalIDs:         make([]autarch.StackSymbolID, 0),
+		grammar:           grammar,
+		mode:              mode,
+		indexer:           indexer,
+		nextStackID:       BottomMarkerID + 1,
+		symbolMap:         make(map[string]autarch.StackSymbolID),
+		terminalToStackID: make(map[TObservation]autarch.StackSymbolID),
+		transitions:       make([]autarch.PDATransition, 0),
+		nextStateID:       StateAccept + 1,
+		terminalIDs:       make([]autarch.StackSymbolID, 0),
 	}
 
 	if mode == MODE_DPDA {
@@ -121,11 +176,10 @@ Prerequisites:
 Edge cases:
 - In DPDA mode, acceptance transition uses Epsilon on bottom marker when input is fully consumed
 */
-func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string) {
+func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
 
 	startStackID := c.getNonTerminalID(c.grammar.StartSymbol)
 
-	// 1. Initialization Phase: Push the Start Symbol and enter the loop
 	c.transitions = append(c.transitions, autarch.PDATransition{
 		Key: autarch.TransitionKey{
 			StateID:  StateInit,
@@ -133,14 +187,11 @@ func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autar
 			StackTop: BottomMarkerID,
 		},
 		Result: autarch.TransitionResult{
-			NextStateID:  StateLoop,
-			StackOp:      autarch.STACK_PUSH,
-			PushSymbolID: startStackID,
+			NextStateID:   StateLoop,
+			PushSymbolIDs: []autarch.StackSymbolID{startStackID},
 		},
 	})
 
-	// 2. Acceptance Phase: If we see the bottom marker in the loop, accept.
-	// In DPDA mode, this transition is taken when input is fully consumed (Epsilon).
 	c.transitions = append(c.transitions, autarch.PDATransition{
 		Key: autarch.TransitionKey{
 			StateID:  StateLoop,
@@ -153,8 +204,9 @@ func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autar
 		},
 	})
 
-	// 3. Compile the Rules
-	c.compileRules()
+	if err := c.compileRules(); err != nil {
+		return nil, nil, err
+	}
 
 	resolutionMap := make(map[autarch.StackSymbolID]string)
 	for name, id := range c.symbolMap {
@@ -165,99 +217,64 @@ func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autar
 	}
 	resolutionMap[BottomMarkerID] = "$BOTTOM"
 
-	return c.transitions, resolutionMap
+	return c.transitions, resolutionMap, nil
 }
 
-func (c *LLCompiler[TObservation]) compileRules() {
+func (c *LLCompiler[TObservation]) compileRules() error {
 	for nonTerminalName, rule := range c.grammar.Rules {
 		ntID := c.getNonTerminalID(nonTerminalName)
 
 		for _, prod := range rule.Productions {
-			c.compileProduction(nonTerminalName, ntID, prod)
+			if err := c.compileProduction(nonTerminalName, ntID, prod); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-func (c *LLCompiler[TObservation]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation]) {
+func (c *LLCompiler[TObservation]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation]) error {
 	symbols := prod.Symbols
 	k := len(symbols)
 
-	var firstOp autarch.StackOperation
-	var firstPushID autarch.StackSymbolID
-	var entryNextState uint64
-
-	// Determine the mechanical stack sequence for the right-hand side
+	var pushIDs []autarch.StackSymbolID
 	if k == 0 || (k == 1 && symbols[0].Type == SYMBOL_EPSILON) {
-		firstOp = autarch.STACK_POP
-		firstPushID = 0
-		entryNextState = StateLoop
+		// Pop only; no push
 	} else {
-		// Resolve IDs for all symbols in the production
-		var pushIDs []autarch.StackSymbolID
 		for _, sym := range symbols {
 			pushIDs = append(pushIDs, c.resolveSymbolID(sym))
 		}
-
-		firstOp = autarch.STACK_REPLACE
-		firstPushID = pushIDs[k-1]
-		entryNextState = StateLoop
-
-		// If we have more than one symbol, we need a synthetic epsilon chain to push the rest
-		if k > 1 {
-			nextState := StateLoop
-
-			// Build backwards from X_1 up to X_{k-1}
-			for i := 0; i < k-1; i++ {
-				currentState := c.allocateSyntheticState()
-				expectedStackTop := pushIDs[i+1] // What we just pushed in the prior step
-
-				c.transitions = append(c.transitions, autarch.PDATransition{
-					Key: autarch.TransitionKey{
-						StateID:  currentState,
-						InputID:  autarch.EpsilonSymbolID,
-						StackTop: expectedStackTop,
-					},
-					Result: autarch.TransitionResult{
-						NextStateID:  nextState,
-						StackOp:      autarch.STACK_PUSH,
-						PushSymbolID: pushIDs[i],
-					},
-				})
-				nextState = currentState
-			}
-			entryNextState = nextState
-		}
 	}
 
-	// Determine what input triggers this rule expansion
 	var triggers []uint64
 
 	if c.mode == MODE_DPDA {
-		// LL(1) Predictive Parsing: Expand only when looking at a token in the Predictive Set
 		triggers = c.computePredictiveSet(ntName, prod)
 		if len(triggers) == 0 {
-			panic(fmt.Sprintf("Grammar Error: Production for '%s' can never be reached (empty predictive set)", ntName))
+			return fmt.Errorf("production for '%s' can never be reached (empty predictive set)", ntName)
 		}
 	} else {
-		// Pure NPDA: Blindly branch on Epsilon
 		triggers = []uint64{autarch.EpsilonSymbolID}
 	}
 
-	// Bind the entry transitions
 	for _, trigger := range triggers {
+		res := autarch.TransitionResult{NextStateID: StateLoop}
+		if len(pushIDs) > 0 {
+			res.PushSymbolIDs = pushIDs
+		} else {
+			res.StackOp = autarch.STACK_POP
+		}
 		c.transitions = append(c.transitions, autarch.PDATransition{
 			Key: autarch.TransitionKey{
 				StateID:  StateLoop,
 				InputID:  trigger,
 				StackTop: ntID,
 			},
-			Result: autarch.TransitionResult{
-				NextStateID:  entryNextState,
-				StackOp:      firstOp,
-				PushSymbolID: firstPushID,
-			},
+			Result: res,
 		})
 	}
+
+	return nil
 }
 
 // computePredictiveSet returns input symbol IDs (uint64) for transition keys:
@@ -365,12 +382,6 @@ func (c *LLCompiler[TObservation]) getNonTerminalID(name string) autarch.StackSy
 	return id
 }
 
-func (c *LLCompiler[TObservation]) allocateSyntheticState() uint64 {
-	id := c.nextStateID
-	c.nextStateID++
-	return id
-}
-
 func (c *LLCompiler[TObservation]) hasMatchTransition(inputID uint64, stackTop autarch.StackSymbolID) bool {
 	for _, t := range c.transitions {
 		if t.Key.StateID == StateLoop && t.Key.InputID == inputID && t.Key.StackTop == stackTop {
@@ -403,31 +414,40 @@ Prerequisites:
 Edge cases:
 - Returns (npda, debugMap, nil); errors from NPDACreate are not currently returned
 */
-func CompileNPDA[TObservation comparable, TStateOutcome any](
+func CompileNPDA[TObservation comparable, TOutcome any](
 	grammar *Grammar[TObservation],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
-	acceptOutcome TStateOutcome,
+	acceptOutcome TOutcome,
 	maxStackNodes uint64,
 	maxStackDepth uint64,
 	maxBranches uint64,
 	maxEpsilonSteps uint64,
-) (*autarch.NPDA[TObservation, TStateOutcome], map[autarch.StackSymbolID]string, error) {
+) (*autarch.NPDA[TObservation, AnnotatedOutcome[TOutcome]], []autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
 
 	compiler := CompilerCreate(grammar, MODE_NPDA, indexer)
-	transitions, debugMap := compiler.Compile()
+	transitions, debugMap, err := compiler.Compile()
+	if err != nil {
+		return nil, transitions, debugMap, wrapContextaGrammarError("NPDA", err, 0)
+	}
 
-	// Build the outcomes array.
-	// The length must cover the highest synthetic state ID generated by the compiler.
 	numStates := compiler.nextStateID
-	outcomes := make([]TStateOutcome, numStates)
-	outcomes[StateAccept] = acceptOutcome
+	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
+	for i := range outcomes {
+		outcomes[i] = AnnotatedOutcome[TOutcome]{}
+	}
+	startRule := grammar.Rules[grammar.StartSymbol]
+	var acceptAnn *AnnotationID
+	if startRule != nil && startRule.AnnotationID != nil {
+		acceptAnn = startRule.AnnotationID
+	}
+	outcomes[StateAccept] = AnnotatedOutcome[TOutcome]{Value: acceptOutcome, Annotation: acceptAnn}
 
 	npda := autarch.NPDACreate(
 		allocFn,
 		alphabet,
-		[]uint64{StateInit}, // Starts at the compiler's init state
+		[]uint64{StateInit},
 		transitions,
 		outcomes,
 		indexer,
@@ -437,7 +457,7 @@ func CompileNPDA[TObservation comparable, TStateOutcome any](
 		maxEpsilonSteps,
 	)
 
-	return npda, debugMap, nil
+	return npda, transitions, debugMap, nil
 }
 
 /*
@@ -464,21 +484,32 @@ Prerequisites:
 Edge cases:
 - Returns error if DPDACreate fails (nondeterminism or epsilon/consuming conflict)
 */
-func CompileDPDA[TObservation comparable, TStateOutcome any](
+func CompileDPDA[TObservation comparable, TOutcome any](
 	grammar *Grammar[TObservation],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
-	acceptOutcome TStateOutcome,
+	acceptOutcome TOutcome,
 	maxEpsilonSteps uint64,
-) (*autarch.DPDA[TObservation, TStateOutcome], map[autarch.StackSymbolID]string, error) {
+) (*autarch.DPDA[TObservation, AnnotatedOutcome[TOutcome]], []autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
 
 	compiler := CompilerCreate(grammar, MODE_DPDA, indexer)
-	transitions, debugMap := compiler.Compile()
+	transitions, debugMap, err := compiler.Compile()
+	if err != nil {
+		return nil, transitions, debugMap, wrapContextaGrammarError("DPDA", err, 0)
+	}
 
 	numStates := compiler.nextStateID
-	outcomes := make([]TStateOutcome, numStates)
-	outcomes[StateAccept] = acceptOutcome
+	outcomes := make([]AnnotatedOutcome[TOutcome], numStates)
+	for i := range outcomes {
+		outcomes[i] = AnnotatedOutcome[TOutcome]{}
+	}
+	startRule := grammar.Rules[grammar.StartSymbol]
+	var acceptAnn *AnnotationID
+	if startRule != nil && startRule.AnnotationID != nil {
+		acceptAnn = startRule.AnnotationID
+	}
+	outcomes[StateAccept] = AnnotatedOutcome[TOutcome]{Value: acceptOutcome, Annotation: acceptAnn}
 
 	dpda, err := autarch.DPDACreate(
 		allocFn,
@@ -487,13 +518,13 @@ func CompileDPDA[TObservation comparable, TStateOutcome any](
 		transitions,
 		outcomes,
 		indexer,
-		compiler.terminalIDs, // Required for lookahead consumption logic
+		compiler.terminalIDs,
 		maxEpsilonSteps,
 	)
 
 	if err != nil {
-		return nil, nil, fmt.Errorf("grammar is not LL(1) compliant: %w", err)
+		return nil, transitions, debugMap, wrapContextaGrammarError("DPDA", err, 0)
 	}
 
-	return dpda, debugMap, nil
+	return dpda, transitions, debugMap, nil
 }

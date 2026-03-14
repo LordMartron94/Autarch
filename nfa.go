@@ -699,7 +699,11 @@ func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcom
 	for _, observation := range input {
 		symbols := nfa.indexer(observation)
 		if len(symbols) == 0 {
-			return nil, fmt.Errorf("invalid symbol: %v", observation)
+			return nil, &AutomatonError{
+				Kind:      AutomatonErrorInvalidSymbolFinite,
+				Automaton: "NFA",
+				Message:   fmt.Sprintf("invalid symbol: %v", observation),
+			}
 		}
 
 		nextSet := make(map[uint64]struct{})
@@ -795,7 +799,11 @@ func NFATransitionsForStates[TObservation, TStateOutcome any](
 ) ([]uint64, error) {
 	symbols := nfa.indexer(observation)
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("invalid symbol: %v", observation)
+		return nil, &AutomatonError{
+			Kind:      AutomatonErrorInvalidSymbolFinite,
+			Automaton: "NFA",
+			Message:   fmt.Sprintf("invalid symbol: %v", observation),
+		}
 	}
 
 	out := make(map[uint64]struct{})
