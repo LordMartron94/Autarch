@@ -15,7 +15,7 @@ Space complexity: O(1)
 type SymbolType uint8
 
 const (
-	SYMBOL_TERMINAL    SymbolType = iota
+	SYMBOL_TERMINAL SymbolType = iota
 	SYMBOL_NON_TERMINAL
 	SYMBOL_EPSILON
 )
@@ -29,10 +29,11 @@ For SYMBOL_NON_TERMINAL, Name is the rule name. For SYMBOL_EPSILON, no other fie
 Time complexity: O(1)
 Space complexity: O(1)
 */
-type Symbol[TTokenID comparable] struct {
+type Symbol[TTokenID comparable, TMeta any] struct {
 	Type  SymbolType
 	Name  string
 	Token TTokenID
+	Meta  TMeta
 }
 
 /*
@@ -44,8 +45,8 @@ SYMBOL_EPSILON represent an epsilon production.
 Time complexity: O(1) for field access
 Space complexity: O(k) where k is len(Symbols)
 */
-type Production[TTokenID comparable] struct {
-	Symbols []Symbol[TTokenID]
+type Production[TTokenID comparable, TMeta any] struct {
+	Symbols []Symbol[TTokenID, TMeta]
 }
 
 /*
@@ -58,10 +59,11 @@ optional; when set, it is carried into PDA accept outcomes (e.g. for rule identi
 Time complexity: O(1) for field access
 Space complexity: O(p) where p is total productions and their symbols
 */
-type Rule[TTokenID comparable] struct {
+type Rule[TTokenID comparable, TMeta any] struct {
 	NonTerminal  string
-	Productions  []Production[TTokenID]
+	Productions  []Production[TTokenID, TMeta]
 	AnnotationID *AnnotationID
+	Meta         TMeta
 }
 
 /*
@@ -76,9 +78,9 @@ with the same alphabet and SymbolIndexer so the indexer resolves terminals to sy
 Time complexity: O(1) for map lookup by name
 Space complexity: O(r + s) where r is rules, s is total symbols in all productions
 */
-type Grammar[TTokenID comparable] struct {
+type Grammar[TTokenID comparable, TMeta any] struct {
 	StartSymbol string
-	Rules       map[string]*Rule[TTokenID]
+	Rules       map[string]*Rule[TTokenID, TMeta]
 }
 
 /*
@@ -88,8 +90,8 @@ Use BuilderCreate, then Define rules with NonTerm/Term/Epsilon and Seq/Define.
 Build validates that the start symbol is defined and that all referenced non-terminals
 exist, then returns the Grammar and nil, or nil and an error.
 */
-type Builder[TTokenID comparable] struct {
-	grammar *Grammar[TTokenID]
+type Builder[TTokenID comparable, TMeta any] struct {
+	grammar *Grammar[TTokenID, TMeta]
 }
 
 /*
@@ -100,11 +102,11 @@ The start symbol must be defined via Define before Build is called.
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func BuilderCreate[TTokenID comparable](startSymbol string) *Builder[TTokenID] {
-	return &Builder[TTokenID]{
-		grammar: &Grammar[TTokenID]{
+func BuilderCreate[TTokenID comparable, TMeta any](startSymbol string) *Builder[TTokenID, TMeta] {
+	return &Builder[TTokenID, TMeta]{
+		grammar: &Grammar[TTokenID, TMeta]{
 			StartSymbol: startSymbol,
-			Rules:       make(map[string]*Rule[TTokenID]),
+			Rules:       make(map[string]*Rule[TTokenID, TMeta]),
 		},
 	}
 }
@@ -119,8 +121,8 @@ The rule does not need to be defined yet; it will be validated when Build is cal
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func (b *Builder[TTokenID]) NonTerm(name string) Symbol[TTokenID] {
-	return Symbol[TTokenID]{
+func (b *Builder[TTokenID, TMeta]) NonTerm(name string) Symbol[TTokenID, TMeta] {
+	return Symbol[TTokenID, TMeta]{
 		Type: SYMBOL_NON_TERMINAL,
 		Name: name,
 	}
@@ -137,8 +139,8 @@ manual TTokenID→uint64 mapping is required.
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func (b *Builder[TTokenID]) Term(token TTokenID) Symbol[TTokenID] {
-	return Symbol[TTokenID]{
+func (b *Builder[TTokenID, TMeta]) Term(token TTokenID) Symbol[TTokenID, TMeta] {
+	return Symbol[TTokenID, TMeta]{
 		Type:  SYMBOL_TERMINAL,
 		Token: token,
 	}
@@ -150,8 +152,8 @@ Epsilon creates an empty-string symbol for optional or nullable productions.
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func (b *Builder[TTokenID]) Epsilon() Symbol[TTokenID] {
-	return Symbol[TTokenID]{
+func (b *Builder[TTokenID, TMeta]) Epsilon() Symbol[TTokenID, TMeta] {
+	return Symbol[TTokenID, TMeta]{
 		Type: SYMBOL_EPSILON,
 	}
 }
@@ -166,8 +168,8 @@ Use with Define to declare one alternative for a non-terminal.
 Time complexity: O(k) where k is len(symbols)
 Space complexity: O(k)
 */
-func Seq[TTokenID comparable](symbols ...Symbol[TTokenID]) Production[TTokenID] {
-	return Production[TTokenID]{
+func Seq[TTokenID comparable, TMeta any](symbols ...Symbol[TTokenID, TMeta]) Production[TTokenID, TMeta] {
+	return Production[TTokenID, TMeta]{
 		Symbols: symbols,
 	}
 }
@@ -181,12 +183,12 @@ Validation of references to other non-terminals happens at Build.
 Time complexity: O(p) where p is total symbols in productions
 Space complexity: O(p)
 */
-func (b *Builder[TTokenID]) Define(nonTerminal string, productions ...Production[TTokenID]) {
+func (b *Builder[TTokenID, TMeta]) Define(nonTerminal string, productions ...Production[TTokenID, TMeta]) {
 	if _, exists := b.grammar.Rules[nonTerminal]; exists {
 		panic(fmt.Sprintf("Rule '%s' is already defined", nonTerminal))
 	}
 
-	b.grammar.Rules[nonTerminal] = &Rule[TTokenID]{
+	b.grammar.Rules[nonTerminal] = &Rule[TTokenID, TMeta]{
 		NonTerminal: nonTerminal,
 		Productions: productions,
 	}
@@ -202,7 +204,7 @@ rule does not exist.
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func (b *Builder[TTokenID]) RuleAnnotation(ruleName string, id AnnotationID) {
+func (b *Builder[TTokenID, TMeta]) RuleAnnotation(ruleName string, id AnnotationID) {
 	rule, exists := b.grammar.Rules[ruleName]
 	if !exists {
 		panic(fmt.Sprintf("Rule '%s' is not defined", ruleName))
@@ -224,7 +226,7 @@ Edge cases:
 - Returns error if start symbol has no rule
 - Returns error for undefined non-terminals (e.g., typo in NonTerm name)
 */
-func (b *Builder[TTokenID]) Build() (*Grammar[TTokenID], error) {
+func (b *Builder[TTokenID, TMeta]) Build() (*Grammar[TTokenID, TMeta], error) {
 	// Validation: Check that the start symbol exists
 	if _, exists := b.grammar.Rules[b.grammar.StartSymbol]; !exists {
 		return nil, fmt.Errorf("start symbol '%s' has no defined rule", b.grammar.StartSymbol)

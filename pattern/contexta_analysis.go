@@ -53,7 +53,7 @@ Prerequisites:
 Edge cases:
 - Start symbol's Follow set does not include EOF unless caller injects it
 */
-func ComputeAnalysis[TTokenID comparable](grammar *Grammar[TTokenID]) *GrammarAnalysis[TTokenID] {
+func ComputeAnalysis[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMeta]) *GrammarAnalysis[TTokenID] {
 	analysis := &GrammarAnalysis[TTokenID]{
 		Nullable: make(map[string]bool),
 		First:    make(map[string]TokenSet[TTokenID]),
@@ -75,7 +75,7 @@ func ComputeAnalysis[TTokenID comparable](grammar *Grammar[TTokenID]) *GrammarAn
 
 // ------------------------------------------------------------- CORE ALGORITHMS
 
-func computeNullable[TTokenID comparable](grammar *Grammar[TTokenID], analysis *GrammarAnalysis[TTokenID]) {
+func computeNullable[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMeta], analysis *GrammarAnalysis[TTokenID]) {
 	for changed := true; changed; {
 		changed = false
 
@@ -108,7 +108,7 @@ func computeNullable[TTokenID comparable](grammar *Grammar[TTokenID], analysis *
 	}
 }
 
-func computeFirst[TTokenID comparable](grammar *Grammar[TTokenID], analysis *GrammarAnalysis[TTokenID]) {
+func computeFirst[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMeta], analysis *GrammarAnalysis[TTokenID]) {
 	for changed := true; changed; {
 		changed = false
 
@@ -140,7 +140,7 @@ func computeFirst[TTokenID comparable](grammar *Grammar[TTokenID], analysis *Gra
 	}
 }
 
-func computeFollow[TTokenID comparable](grammar *Grammar[TTokenID], analysis *GrammarAnalysis[TTokenID]) {
+func computeFollow[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMeta], analysis *GrammarAnalysis[TTokenID]) {
 	// Note: A true LL(1) parser requires an explicit EOF token injected into Follow(StartSymbol).
 	// The consumer should handle injecting EOF during the compilation phase.
 

@@ -15,7 +15,7 @@ ContextaDebugFormatter supplies string rendering for Contexta grammar debug dump
 FormatSymbolType and FormatToken are required. FormatRuleName is optional (defaults to identity).
 Optional Color* hooks allow terminal or IDE coloring of rule names, tokens, and symbols.
 */
-type ContextaDebugFormatter[TTokenID comparable] struct {
+type ContextaDebugFormatter[TTokenID comparable, TMeta any] struct {
 	/* REQUIRED */
 	FormatSymbolType func(SymbolType) string
 	FormatToken      func(TTokenID) string
@@ -24,14 +24,14 @@ type ContextaDebugFormatter[TTokenID comparable] struct {
 	FormatRuleName func(string) string
 
 	/* Optional coloring */
-	ColorRuleName  func(string) string
-	ColorToken     func(string) string
-	ColorNonTerm   func(string) string
-	ColorEpsilon   func(string) string
-	ColorMeta      func(string) string
+	ColorRuleName func(string) string
+	ColorToken    func(string) string
+	ColorNonTerm  func(string) string
+	ColorEpsilon  func(string) string
+	ColorMeta     func(string) string
 }
 
-func (f ContextaDebugFormatter[TTokenID]) validate() {
+func (f ContextaDebugFormatter[TTokenID, TMeta]) validate() {
 	if f.FormatSymbolType == nil {
 		panic("ContextaDebugFormatter: FormatSymbolType is required")
 	}
@@ -45,8 +45,8 @@ NewContextaCleanFormatter returns a minimal formatter for quick grammar inspecti
 
 Symbol types render as T/NT/ε; tokens use the provided obsFormatter; rule names are unchanged.
 */
-func NewContextaCleanFormatter[T comparable](tokenFormatter func(T) string) ContextaDebugFormatter[T] {
-	return ContextaDebugFormatter[T]{
+func NewContextaCleanFormatter[T comparable, TMeta any](tokenFormatter func(T) string) ContextaDebugFormatter[T, TMeta] {
+	return ContextaDebugFormatter[T, TMeta]{
 		FormatSymbolType: func(st SymbolType) string {
 			switch st {
 			case SYMBOL_TERMINAL:
@@ -59,8 +59,8 @@ func NewContextaCleanFormatter[T comparable](tokenFormatter func(T) string) Cont
 				return "?"
 			}
 		},
-		FormatToken:     tokenFormatter,
-		FormatRuleName:  func(s string) string { return s },
+		FormatToken:    tokenFormatter,
+		FormatRuleName: func(s string) string { return s },
 	}
 }
 
@@ -75,8 +75,8 @@ Similar to RegulaDebugger: formatter drives semantic rendering, glyphs and gutte
 control layout. Use DumpString to produce the full dump; optionally attach
 GrammarAnalysis for nullable/first/follow in meta (future).
 */
-type ContextaDebugger[TTokenID comparable] struct {
-	Formatter ContextaDebugFormatter[TTokenID]
+type ContextaDebugger[TTokenID comparable, TMeta any] struct {
+	Formatter ContextaDebugFormatter[TTokenID, TMeta]
 
 	GutterWidth int
 
@@ -91,11 +91,11 @@ NewContextaDebugger creates a ContextaDebugger with the given formatter.
 
 The formatter must have FormatSymbolType and FormatToken set (validate is called).
 */
-func NewContextaDebugger[TTokenID comparable](
-	formatter ContextaDebugFormatter[TTokenID],
-) *ContextaDebugger[TTokenID] {
+func NewContextaDebugger[TTokenID comparable, TMeta any](
+	formatter ContextaDebugFormatter[TTokenID, TMeta],
+) *ContextaDebugger[TTokenID, TMeta] {
 	formatter.validate()
-	return &ContextaDebugger[TTokenID]{
+	return &ContextaDebugger[TTokenID, TMeta]{
 		Formatter:   formatter,
 		GutterWidth: 40,
 		GlyphMid:    "├─ ",
@@ -110,7 +110,7 @@ DumpString produces a human-readable dump of the grammar: start symbol, then eac
 rule with its productions (each production as a sequence of symbols).
 Rule order is deterministic (sorted by rule name).
 */
-func (d *ContextaDebugger[TTokenID]) DumpString(grammar *Grammar[TTokenID]) string {
+func (d *ContextaDebugger[TTokenID, TMeta]) DumpString(grammar *Grammar[TTokenID, TMeta]) string {
 	if grammar == nil {
 		return "(nil grammar)\n"
 	}
@@ -148,10 +148,10 @@ func (d *ContextaDebugger[TTokenID]) DumpString(grammar *Grammar[TTokenID]) stri
 	return b.String()
 }
 
-func (d *ContextaDebugger[TTokenID]) writeRule(
+func (d *ContextaDebugger[TTokenID, TMeta]) writeRule(
 	w *strings.Builder,
 	ruleName string,
-	rule *Rule[TTokenID],
+	rule *Rule[TTokenID, TMeta],
 	prefix string,
 	isLast bool,
 ) {
@@ -195,7 +195,7 @@ func (d *ContextaDebugger[TTokenID]) writeRule(
 	}
 }
 
-func (d *ContextaDebugger[TTokenID]) writeProduction(w *strings.Builder, prod *Production[TTokenID]) {
+func (d *ContextaDebugger[TTokenID, TMeta]) writeProduction(w *strings.Builder, prod *Production[TTokenID, TMeta]) {
 	f := d.Formatter
 	var parts []string
 	for _, sym := range prod.Symbols {
@@ -237,6 +237,6 @@ DebugDump produces a human-readable dump of the grammar using the given formatte
 
 Convenience wrapper around NewContextaDebugger and DumpString.
 */
-func (g *Grammar[TTokenID]) DebugDump(f ContextaDebugFormatter[TTokenID]) string {
+func (g *Grammar[TTokenID, TMeta]) DebugDump(f ContextaDebugFormatter[TTokenID, TMeta]) string {
 	return NewContextaDebugger(f).DumpString(g)
 }

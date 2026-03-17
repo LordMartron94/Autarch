@@ -105,8 +105,8 @@ mapping is required. Internal state IDs and stack symbol IDs are assigned during
 Use CompileNPDA or CompileDPDA for a full automaton; use CompilerCreate and Compile for
 transitions and a debug map only.
 */
-type LLCompiler[TObservation comparable] struct {
-	grammar *Grammar[TObservation]
+type LLCompiler[TObservation comparable, TMeta any] struct {
+	grammar *Grammar[TObservation, TMeta]
 	mode    CompilerMode
 	indexer autarch.SymbolIndexer[TObservation]
 
@@ -135,12 +135,12 @@ alphabet + indexer (same as for DFA/NFA); no manual TObservation→uint64 mappin
 Time complexity: O(1) for MODE_NPDA; O(grammar size) for MODE_DPDA (ComputeAnalysis)
 Space complexity: O(grammar + analysis)
 */
-func CompilerCreate[TObservation comparable](
-	grammar *Grammar[TObservation],
+func CompilerCreate[TObservation comparable, TMeta any](
+	grammar *Grammar[TObservation, TMeta],
 	mode CompilerMode,
 	indexer autarch.SymbolIndexer[TObservation],
-) *LLCompiler[TObservation] {
-	c := &LLCompiler[TObservation]{
+) *LLCompiler[TObservation, TMeta] {
+	c := &LLCompiler[TObservation, TMeta]{
 		grammar:           grammar,
 		mode:              mode,
 		indexer:           indexer,
@@ -153,7 +153,7 @@ func CompilerCreate[TObservation comparable](
 	}
 
 	if mode == MODE_DPDA {
-		c.analysis = ComputeAnalysis(grammar)
+		c.analysis = ComputeAnalysis[TObservation, TMeta](grammar)
 	}
 
 	return c
@@ -176,7 +176,7 @@ Prerequisites:
 Edge cases:
 - In DPDA mode, acceptance transition uses Epsilon on bottom marker when input is fully consumed
 */
-func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
+func (c *LLCompiler[TObservation, TMeta]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
 
 	startStackID := c.getNonTerminalID(c.grammar.StartSymbol)
 
@@ -220,7 +220,7 @@ func (c *LLCompiler[TObservation]) Compile() ([]autarch.PDATransition, map[autar
 	return c.transitions, resolutionMap, nil
 }
 
-func (c *LLCompiler[TObservation]) compileRules() error {
+func (c *LLCompiler[TObservation, TMeta]) compileRules() error {
 	for nonTerminalName, rule := range c.grammar.Rules {
 		ntID := c.getNonTerminalID(nonTerminalName)
 
@@ -233,7 +233,7 @@ func (c *LLCompiler[TObservation]) compileRules() error {
 	return nil
 }
 
-func (c *LLCompiler[TObservation]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation]) error {
+func (c *LLCompiler[TObservation, TMeta]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation, TMeta]) error {
 	symbols := prod.Symbols
 	k := len(symbols)
 
@@ -279,7 +279,7 @@ func (c *LLCompiler[TObservation]) compileProduction(ntName string, ntID autarch
 
 // computePredictiveSet returns input symbol IDs (uint64) for transition keys:
 // FIRST(prod) ∪ FOLLOW(ntName) if prod is nullable, resolved via the indexer.
-func (c *LLCompiler[TObservation]) computePredictiveSet(ntName string, prod Production[TObservation]) []uint64 {
+func (c *LLCompiler[TObservation, TMeta]) computePredictiveSet(ntName string, prod Production[TObservation, TMeta]) []uint64 {
 	firstSet := make(TokenSet[TObservation])
 	isNullable := true
 
@@ -325,7 +325,7 @@ func (c *LLCompiler[TObservation]) computePredictiveSet(ntName string, prod Prod
 }
 
 // resolveSymbolID maps a Contexta symbol to a StackSymbolID and emits match transitions for terminals.
-func (c *LLCompiler[TObservation]) resolveSymbolID(sym Symbol[TObservation]) autarch.StackSymbolID {
+func (c *LLCompiler[TObservation, TMeta]) resolveSymbolID(sym Symbol[TObservation, TMeta]) autarch.StackSymbolID {
 	if sym.Type == SYMBOL_NON_TERMINAL {
 		return c.getNonTerminalID(sym.Name)
 	}
@@ -362,7 +362,7 @@ func (c *LLCompiler[TObservation]) resolveSymbolID(sym Symbol[TObservation]) aut
 	return stackID
 }
 
-func (c *LLCompiler[TObservation]) getTerminalStackID(obs TObservation) autarch.StackSymbolID {
+func (c *LLCompiler[TObservation, TMeta]) getTerminalStackID(obs TObservation) autarch.StackSymbolID {
 	if id, exists := c.terminalToStackID[obs]; exists {
 		return id
 	}
@@ -372,7 +372,7 @@ func (c *LLCompiler[TObservation]) getTerminalStackID(obs TObservation) autarch.
 	return id
 }
 
-func (c *LLCompiler[TObservation]) getNonTerminalID(name string) autarch.StackSymbolID {
+func (c *LLCompiler[TObservation, TMeta]) getNonTerminalID(name string) autarch.StackSymbolID {
 	if id, exists := c.symbolMap[name]; exists {
 		return id
 	}
@@ -382,7 +382,7 @@ func (c *LLCompiler[TObservation]) getNonTerminalID(name string) autarch.StackSy
 	return id
 }
 
-func (c *LLCompiler[TObservation]) hasMatchTransition(inputID uint64, stackTop autarch.StackSymbolID) bool {
+func (c *LLCompiler[TObservation, TMeta]) hasMatchTransition(inputID uint64, stackTop autarch.StackSymbolID) bool {
 	for _, t := range c.transitions {
 		if t.Key.StateID == StateLoop && t.Key.InputID == inputID && t.Key.StackTop == stackTop {
 			return true
@@ -414,8 +414,8 @@ Prerequisites:
 Edge cases:
 - Returns (npda, debugMap, nil); errors from NPDACreate are not currently returned
 */
-func CompileNPDA[TObservation comparable, TOutcome any](
-	grammar *Grammar[TObservation],
+func CompileNPDA[TObservation comparable, TMeta any, TOutcome any](
+	grammar *Grammar[TObservation, TMeta],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
@@ -484,8 +484,8 @@ Prerequisites:
 Edge cases:
 - Returns error if DPDACreate fails (nondeterminism or epsilon/consuming conflict)
 */
-func CompileDPDA[TObservation comparable, TOutcome any](
-	grammar *Grammar[TObservation],
+func CompileDPDA[TObservation comparable, TMeta any, TOutcome any](
+	grammar *Grammar[TObservation, TMeta],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
 	indexer autarch.SymbolIndexer[TObservation],
