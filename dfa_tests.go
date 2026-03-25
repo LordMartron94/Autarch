@@ -31,7 +31,16 @@ func TestDFA(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) (uint64, bool) {
+		switch r {
+		case 'a':
+			return 0, true
+		case 'b':
+			return 1, true
+		default:
+			return 0, false
+		}
+	}
 
 	dfa := DFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
@@ -47,7 +56,7 @@ func TestDFA(t *testing.T) {
 			{CurrentState: 2, Symbol: symbolB, NextState: 0},
 		},
 		[]bool{false, false, true},
-		indexer,
+		resolver,
 	)
 
 	type testCase struct {

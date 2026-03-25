@@ -59,9 +59,10 @@ type SharedCompilationContext[TObs, TPattern any] struct {
 
 	collector *symbolCollector[TObs]
 
-	alphabet []autarch.SymbolDefinition[TObs]
-	expander symbolExpander
-	indexer  autarch.SymbolIndexer[TObs]
+	alphabet                []autarch.SymbolDefinition[TObs]
+	expander                symbolExpander
+	deterministicResolver   autarch.DeterministicSymbolResolver[TObs]
+	nondeterministicResolve autarch.NondeterministicSymbolResolver[TObs]
 }
 
 /*
@@ -99,7 +100,8 @@ func (ctx *SharedCompilationContext[TObs, TPattern]) buildAlphabet() {
 
 	ctx.alphabet = result.Definitions
 	ctx.expander = newSymbolExpander(result.Mapping)
-	ctx.indexer = autarch.SymbolIndexerBuild(ctx.alphabet)
+	ctx.deterministicResolver = result.DeterministicResolver
+	ctx.nondeterministicResolve = result.NondeterministicResolve
 }
 
 /*
@@ -122,6 +124,18 @@ func (ctx *SharedCompilationContext[TObs, TPattern]) fullPrepare(
 	for _, pattern := range patterns {
 		bindIDs(pattern, feeder, bindState)
 	}
+}
+
+func SharedCompilationContextDeterministicResolverGet[TObs, TPattern any](
+	ctx *SharedCompilationContext[TObs, TPattern],
+) autarch.DeterministicSymbolResolver[TObs] {
+	return ctx.deterministicResolver
+}
+
+func SharedCompilationContextNondeterministicResolverGet[TObs, TPattern any](
+	ctx *SharedCompilationContext[TObs, TPattern],
+) autarch.NondeterministicSymbolResolver[TObs] {
+	return ctx.nondeterministicResolve
 }
 
 //

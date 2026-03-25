@@ -28,7 +28,26 @@ func TestNFAToDFA(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) []uint64 {
+		switch r {
+		case 'a':
+			return []uint64{0}
+		case 'b':
+			return []uint64{1}
+		default:
+			return nil
+		}
+	}
+	deterministicResolver := func(r rune) (uint64, bool) {
+		switch r {
+		case 'a':
+			return 0, true
+		case 'b':
+			return 1, true
+		default:
+			return 0, false
+		}
+	}
 
 	// NFA for: strings containing at least one 'a'
 	nfa := NFACreate(
@@ -45,7 +64,7 @@ func TestNFAToDFA(t *testing.T) {
 		nil, // No epsilon edges
 		[]uint64{0},
 		[]bool{false, true},
-		indexer,
+		resolver,
 	)
 
 	// Convert NFA to DFA
@@ -56,6 +75,7 @@ func TestNFAToDFA(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
+		deterministicResolver,
 		nil, // Use default resolution (OutcomeResolutionFirst)
 	)
 
@@ -120,7 +140,26 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) []uint64 {
+		switch r {
+		case 'a':
+			return []uint64{0}
+		case 'b':
+			return []uint64{1}
+		default:
+			return nil
+		}
+	}
+	deterministicResolver := func(r rune) (uint64, bool) {
+		switch r {
+		case 'a':
+			return 0, true
+		case 'b':
+			return 1, true
+		default:
+			return 0, false
+		}
+	}
 
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
@@ -138,7 +177,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 (for a*) and State 1 (for b*) outcomes
-		indexer,
+		resolver,
 	)
 
 	// Convert NFA to DFA
@@ -149,6 +188,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 		func(size, align uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 		},
+		deterministicResolver,
 		nil, // Use default resolution (OutcomeResolutionFirst)
 	)
 

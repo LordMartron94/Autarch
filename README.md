@@ -310,6 +310,19 @@ dfa := autarch.NFAToDFA(nfa, minTemp, maxTemp, allocFn, customResolution)
 
 **`SymbolIndexer[TObservation]`**: Function type mapping observations to symbols.
 
+**`DeterministicSymbolResolver[TObservation]`**: Function type mapping one observation to at most one symbol ID. Use this for DFA/DPDA runtime paths.
+
+**`NondeterministicSymbolResolver[TObservation]`**: Function type mapping one observation to zero or more symbol IDs. Use this for NFA/NPDA runtime paths.
+
+### Symbol Resolution Performance
+
+- `SymbolIndexerBuild` is retained as a legacy compatibility adapter.
+- Runtime automata now consume resolver contracts (`DeterministicSymbolResolver` / `NondeterministicSymbolResolver`) and avoid full alphabet predicate scans in step paths.
+- Pattern compilation precomputes lookup domains from partitioned symbols:
+  - Dense byte domains use table lookup (O(1)).
+  - Sparse/ordered domains use interval binary search (O(log n)).
+- This removes per-observation `sym.Match` closure dispatch across the entire alphabet during DFA/DPDA stepping.
+
 **NPDA stack types:** `StackSymbolID`, `StackOperation` (STACK_POP for pop-only; push uses `PushSymbolIDs`), `TransitionKey`, `TransitionResult`, `PDATransition` (shared by NPDA and DPDA), `NPDAConfig`. Use `EpsilonSymbolID` for epsilon transitions in PDAs.
 
 ## Pattern Builder (regula)

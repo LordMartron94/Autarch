@@ -31,10 +31,10 @@ Prerequisites:
 - terminalIDs must list all stack symbol IDs that represent terminals (for lookahead consumption)
 */
 type DPDA[TObservation, TStateOutcome any] struct {
-	outcomes   memcore.MarkRaw
-	alphabet   []SymbolDefinition[TObservation]
-	startState uint64
-	indexer    SymbolIndexer[TObservation]
+	outcomes              memcore.MarkRaw
+	alphabet              []SymbolDefinition[TObservation]
+	startState            uint64
+	deterministicResolver DeterministicSymbolResolver[TObservation]
 
 	transitionTable map[TransitionKey]TransitionResult
 	terminalIDs     map[StackSymbolID]struct{}
@@ -73,11 +73,10 @@ func DPDACreate[TObservation, TStateOutcome any](
 	startState uint64,
 	transitions []PDATransition,
 	outcomes []TStateOutcome,
-	indexer SymbolIndexer[TObservation],
+	resolver DeterministicSymbolResolver[TObservation],
 	terminalIDs []StackSymbolID,
 	maxEpsilonSteps uint64,
 ) (*DPDA[TObservation, TStateOutcome], error) {
-
 	numStates := uint64(len(outcomes))
 	outcomeTable, _ := memarch.MemArchArrayCreate[TStateOutcome](allocFn, numStates)
 	memstruct.ArraySetFromSliceUnsafe(outcomeTable, outcomes)
@@ -132,14 +131,14 @@ func DPDACreate[TObservation, TStateOutcome any](
 	}
 
 	return &DPDA[TObservation, TStateOutcome]{
-		outcomes:        outcomeTable,
-		alphabet:        alphabet,
-		startState:      startState,
-		indexer:         indexer,
-		transitionTable: transitionTable,
-		terminalIDs:     termMap,
-		numStates:       numStates,
-		maxEpsilonSteps: maxEpsilonSteps,
+		outcomes:              outcomeTable,
+		alphabet:              alphabet,
+		startState:            startState,
+		deterministicResolver: resolver,
+		transitionTable:       transitionTable,
+		terminalIDs:           termMap,
+		numStates:             numStates,
+		maxEpsilonSteps:       maxEpsilonSteps,
 	}, nil
 }
 
@@ -192,14 +191,14 @@ func DPDARun[TObservation, TStateOutcome any](
 
 		// 2. Peek at the current observation (Lookahead)
 		observation := input[inputIdx]
-		symbols := dpda.indexer(observation)
-		if len(symbols) != 1 {
+		inputID, ok := dpda.deterministicResolver(observation)
+		if !ok {
 			return nil, &AutomatonError{
 				Kind:      AutomatonErrorIndexerAmbiguityDPDA,
 				Automaton: "DPDA",
 				Message: fmt.Sprintf(
-					"DPDA requires unambiguous indexer, got %d symbols for observation",
-					len(symbols),
+					"DPDA requires unambiguous indexer for observation %v",
+					observation,
 				),
 				DPDAContext: &DPDARuntimeContext{
 					Position:    inputIdx,
@@ -209,7 +208,6 @@ func DPDARun[TObservation, TStateOutcome any](
 				},
 			}
 		}
-		inputID := symbols[0].SymbolID
 
 		// 3. Process the transition (Lookahead Expand OR Terminal Match)
 		topSymbol := stack[len(stack)-1]

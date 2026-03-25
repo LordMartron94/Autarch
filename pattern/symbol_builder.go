@@ -118,8 +118,10 @@ func (c *symbolCollector[TObs]) addClass(cls charClass[TObs]) logicalID {
 type physicalID uint64
 
 type alphabetBuildResult[TObs any] struct {
-	Definitions []autarch.SymbolDefinition[TObs]
-	Mapping     map[logicalID][]physicalID
+	Definitions             []autarch.SymbolDefinition[TObs]
+	Mapping                 map[logicalID][]physicalID
+	DeterministicResolver   autarch.DeterministicSymbolResolver[TObs]
+	NondeterministicResolve autarch.NondeterministicSymbolResolver[TObs]
 }
 
 func buildAlphabet[TObs any](
@@ -157,6 +159,7 @@ func buildAlphabet[TObs any](
 	addPhysical := func(
 		match func(TObs) bool,
 		name string,
+		observation *TObs,
 		lo, hi *TObs,
 		covering []logicalID,
 	) {
@@ -167,11 +170,12 @@ func buildAlphabet[TObs any](
 		}
 
 		defs = append(defs, autarch.SymbolDefinition[TObs]{
-			ID:    uint64(id),
-			Name:  name,
-			Match: match,
-			GapLo: lo,
-			GapHi: hi,
+			ID:          uint64(id),
+			Name:        name,
+			Match:       match,
+			Observation: observation,
+			GapLo:       lo,
+			GapHi:       hi,
 		})
 	}
 
@@ -191,6 +195,7 @@ func buildAlphabet[TObs any](
 		addPhysical(
 			func(o TObs) bool { return !observationDomain.LessThan(o, val) && !observationDomain.LessThan(val, o) },
 			fmt.Sprintf("pt:%v", val),
+			&val,
 			nil,
 			nil,
 			pointCover,
@@ -224,6 +229,7 @@ func buildAlphabet[TObs any](
 		addPhysical(
 			func(o TObs) bool { return observationDomain.LessThan(lo, o) && observationDomain.LessThan(o, hi) },
 			fmt.Sprintf("gap:(%v,%v)", lo, hi),
+			nil,
 			&lo,
 			&hi,
 			gapCover,
@@ -231,9 +237,144 @@ func buildAlphabet[TObs any](
 	}
 
 	return alphabetBuildResult[TObs]{
-		Definitions: defs,
-		Mapping:     mapping,
+		Definitions:             defs,
+		Mapping:                 mapping,
+		DeterministicResolver:   buildDeterministicResolver(defs, observationDomain),
+		NondeterministicResolve: buildNondeterministicResolver(defs, observationDomain),
 	}
+}
+
+type symbolInterval[TObs any] struct {
+	lo       TObs
+	hi       TObs
+	symbolID uint64
+}
+
+func buildNondeterministicResolver[TObs any](
+	defs []autarch.SymbolDefinition[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) autarch.NondeterministicSymbolResolver[TObs] {
+	deterministic := buildDeterministicResolver(defs, observationDomain)
+	return func(observation TObs) []uint64 {
+		symbolID, ok := deterministic(observation)
+		if !ok {
+			return nil
+		}
+		return []uint64{symbolID}
+	}
+}
+
+func buildDeterministicResolver[TObs any](
+	defs []autarch.SymbolDefinition[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) autarch.DeterministicSymbolResolver[TObs] {
+	intervals := buildSymbolIntervals(defs, observationDomain)
+	if dense, ok := buildDenseByteResolver(intervals, observationDomain); ok {
+		return dense
+	}
+	return buildIntervalResolver(intervals, observationDomain)
+}
+
+func buildSymbolIntervals[TObs any](
+	defs []autarch.SymbolDefinition[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) []symbolInterval[TObs] {
+	intervals := make([]symbolInterval[TObs], 0, len(defs))
+	for _, def := range defs {
+		if def.Observation != nil {
+			intervals = append(intervals, symbolInterval[TObs]{
+				lo:       *def.Observation,
+				hi:       *def.Observation,
+				symbolID: def.ID,
+			})
+			continue
+		}
+		if def.GapLo == nil || def.GapHi == nil {
+			continue
+		}
+
+		loInclusive, loOk := observationDomain.NextFn(*def.GapLo)
+		hiInclusive, hiOk := observationDomain.PreviousFn(*def.GapHi)
+		if !loOk || !hiOk || observationDomain.GreaterThan(loInclusive, hiInclusive) {
+			continue
+		}
+
+		intervals = append(intervals, symbolInterval[TObs]{
+			lo:       loInclusive,
+			hi:       hiInclusive,
+			symbolID: def.ID,
+		})
+	}
+
+	slices.SortFunc(intervals, func(a, b symbolInterval[TObs]) int {
+		return observationDomain.OrderingCmp(a.lo, b.lo)
+	})
+	return intervals
+}
+
+func buildIntervalResolver[TObs any](
+	intervals []symbolInterval[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) autarch.DeterministicSymbolResolver[TObs] {
+	return func(observation TObs) (uint64, bool) {
+		if len(intervals) == 0 {
+			return 0, false
+		}
+
+		left := 0
+		right := len(intervals) - 1
+		for left <= right {
+			mid := left + (right-left)/2
+			entry := intervals[mid]
+			if observationDomain.LessThan(observation, entry.lo) {
+				right = mid - 1
+				continue
+			}
+			if observationDomain.GreaterThan(observation, entry.hi) {
+				left = mid + 1
+				continue
+			}
+			return entry.symbolID, true
+		}
+		return 0, false
+	}
+}
+
+func buildDenseByteResolver[TObs any](
+	intervals []symbolInterval[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) (autarch.DeterministicSymbolResolver[TObs], bool) {
+	min, minOK := any(observationDomain.Min).(byte)
+	max, maxOK := any(observationDomain.Max).(byte)
+	if !minOK || !maxOK || min != 0 || max != 255 {
+		return nil, false
+	}
+
+	table := make([]uint64, 256)
+	valid := make([]bool, 256)
+
+	for _, entry := range intervals {
+		lo, loOK := any(entry.lo).(byte)
+		hi, hiOK := any(entry.hi).(byte)
+		if !loOK || !hiOK {
+			return nil, false
+		}
+		for idx := lo; idx <= hi; idx++ {
+			table[idx] = entry.symbolID
+			valid[idx] = true
+			if idx == 255 {
+				break
+			}
+		}
+	}
+
+	return func(observation TObs) (uint64, bool) {
+		obs, ok := any(observation).(byte)
+		if !ok || !valid[obs] {
+			return 0, false
+		}
+		return table[obs], true
+	}, true
 }
 
 // ------------------------------------------------------- SYMBOL EXPANDER

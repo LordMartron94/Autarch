@@ -81,8 +81,6 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 		newAlphabet[i].ID = uint64(i)
 	}
 
-	newIndexer := SymbolIndexerBuild(newAlphabet)
-
 	nameToFinalID := make(map[string]uint64)
 	for i, def := range newAlphabet {
 		nameToFinalID[def.Name] = uint64(i)
@@ -96,6 +94,45 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 	}
 	for i, def := range nfaB.alphabet {
 		remapB[uint64(i)] = nameToFinalID[def.Name]
+	}
+
+	seenEpoch := make([]uint32, len(newAlphabet))
+	currentEpoch := uint32(1)
+	outScratch := make([]uint64, 0, len(newAlphabet))
+	mergedResolver := func(observation TObservation) []uint64 {
+		idsA := nfaA.nondeterministicResolver(observation)
+		idsB := nfaB.nondeterministicResolver(observation)
+		if len(idsA) == 0 && len(idsB) == 0 {
+			return nil
+		}
+		currentEpoch++
+		if currentEpoch == 0 {
+			for i := range seenEpoch {
+				seenEpoch[i] = 0
+			}
+			currentEpoch = 1
+		}
+		outScratch = outScratch[:0]
+
+		for _, id := range idsA {
+			merged := remapA[id]
+			if seenEpoch[merged] == currentEpoch {
+				continue
+			}
+			seenEpoch[merged] = currentEpoch
+			outScratch = append(outScratch, merged)
+		}
+
+		for _, id := range idsB {
+			merged := remapB[id]
+			if seenEpoch[merged] == currentEpoch {
+				continue
+			}
+			seenEpoch[merged] = currentEpoch
+			outScratch = append(outScratch, merged)
+		}
+
+		return outScratch
 	}
 
 	// ------------------------------------------------------------
@@ -191,6 +228,6 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 		newEpsilonEdges,
 		[]uint64{0},
 		newOutcomes,
-		newIndexer,
+		mergedResolver,
 	)
 }

@@ -140,7 +140,7 @@ func RegulaCompileToNFAThompson[TObs any, TOutcome comparable](
 		c.epsilonEdges,
 		[]uint64{rootStart},
 		outcomes,
-		ctx.indexer,
+		ctx.nondeterministicResolve,
 	)
 
 	// Return as a single-element slice to satisfy the compiler interface signature

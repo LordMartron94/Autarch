@@ -47,8 +47,8 @@ type NFA[TObservation, TStateOutcome any] struct {
 	alphabet       []SymbolDefinition[TObservation]
 	startingStates []uint64
 
-	indexer   SymbolIndexer[TObservation]
-	numStates uint64
+	nondeterministicResolver NondeterministicSymbolResolver[TObservation]
+	numStates                uint64
 }
 
 /*
@@ -86,7 +86,7 @@ func NFACreate[TObservation, TStateOutcome any](
 	epsilonEdges map[uint64][]uint64,
 	startingStates []uint64,
 	outcomes []TStateOutcome,
-	indexer SymbolIndexer[TObservation],
+	resolver NondeterministicSymbolResolver[TObservation],
 ) *NFA[TObservation, TStateOutcome] {
 	alphabetSize := uint64(len(alphabet))
 	numStates := uint64(len(outcomes))
@@ -116,13 +116,13 @@ func NFACreate[TObservation, TStateOutcome any](
 	}
 
 	return &NFA[TObservation, TStateOutcome]{
-		outcomes:       outcomeTable,
-		transitions:    transitionTable,
-		epsilonEdges:   epsilonMap,
-		startingStates: startingStates,
-		indexer:        indexer,
-		numStates:      numStates,
-		alphabet:       alphabet,
+		outcomes:                 outcomeTable,
+		transitions:              transitionTable,
+		epsilonEdges:             epsilonMap,
+		startingStates:           startingStates,
+		nondeterministicResolver: resolver,
+		numStates:                numStates,
+		alphabet:                 alphabet,
 	}
 }
 
@@ -560,27 +560,6 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 }
 
 /*
-NFAIndexerGet retrieves the symbol indexer function for the NFA.
-
-The indexer maps observations to symbols, enabling the NFA to process input
-and determine valid transitions.
-
-Use cases:
-- Accessing the indexer for custom processing
-- Building compatible automata with the same alphabet
-- Debugging symbol mapping issues
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- nfa must be a valid NFA instance
-*/
-func NFAIndexerGet[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
-	return nfa.indexer
-}
-
-/*
 NFAOutcomesGet retrieves the raw memory array containing state outcomes.
 
 The returned array is indexed by state ID and contains the outcome value
@@ -697,8 +676,8 @@ func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcom
 	current := epsilonClosure(nfa, nfa.startingStates)
 
 	for _, observation := range input {
-		symbols := nfa.indexer(observation)
-		if len(symbols) == 0 {
+		symbolIDs := nfa.nondeterministicResolver(observation)
+		if len(symbolIDs) == 0 {
 			return nil, &AutomatonError{
 				Kind:      AutomatonErrorInvalidSymbolFinite,
 				Automaton: "NFA",
@@ -709,8 +688,8 @@ func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcom
 		nextSet := make(map[uint64]struct{})
 
 		for _, state := range current {
-			for _, symbol := range symbols {
-				key := [2]uint64{state, symbol.SymbolID}
+			for _, symbolID := range symbolIDs {
+				key := [2]uint64{state, symbolID}
 				for _, ns := range nfa.transitions[key] {
 					nextSet[ns] = struct{}{}
 				}
@@ -797,8 +776,8 @@ func NFATransitionsForStates[TObservation, TStateOutcome any](
 	states []uint64,
 	observation TObservation,
 ) ([]uint64, error) {
-	symbols := nfa.indexer(observation)
-	if len(symbols) == 0 {
+	symbolIDs := nfa.nondeterministicResolver(observation)
+	if len(symbolIDs) == 0 {
 		return nil, &AutomatonError{
 			Kind:      AutomatonErrorInvalidSymbolFinite,
 			Automaton: "NFA",
@@ -809,8 +788,8 @@ func NFATransitionsForStates[TObservation, TStateOutcome any](
 	out := make(map[uint64]struct{})
 
 	for _, s := range states {
-		for _, symbol := range symbols {
-			key := [2]uint64{s, symbol.SymbolID}
+		for _, symbolID := range symbolIDs {
+			key := [2]uint64{s, symbolID}
 			next, exists := nfa.transitions[key]
 			if !exists {
 				continue

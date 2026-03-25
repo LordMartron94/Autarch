@@ -25,7 +25,6 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 
 	alphabet := DFAAlphabetGet(dfa)
 	alphabetSize := len(alphabet)
-	indexer := DFAIndexerGet(dfa)
 	predecessorSets := DFAPredecessorSets(dfa)
 
 	// 1. Build predecessor bitsets (Dynamically sized)
@@ -125,7 +124,14 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 		}
 	}
 
-	return buildMinimizedDFA[TObservation, TStateOutcome](dfa, dfaAllocationFn, P, alphabet, indexer, outCur)
+	return buildMinimizedDFA[TObservation, TStateOutcome](
+		dfa,
+		dfaAllocationFn,
+		P,
+		alphabet,
+		dfa.deterministicResolver,
+		outCur,
+	)
 }
 
 func buildMinimizedDFA[TO any, TR any](
@@ -133,7 +139,7 @@ func buildMinimizedDFA[TO any, TR any](
 	alloc memarch.AllocationFn,
 	P []dfaStateSubset,
 	alphabet []SymbolDefinition[TO],
-	indexer SymbolIndexer[TO],
+	resolver DeterministicSymbolResolver[TO],
 	outCur memstruct.ArrayCursor[TR],
 ) *DFA[TO, TR] {
 	// Canonicalize: Start state (0) must be Block 0
@@ -172,5 +178,5 @@ func buildMinimizedDFA[TO any, TR any](
 		}
 	}
 
-	return DFACreate(alloc, alphabet, minTransitions, minOutcomes, indexer)
+	return DFACreate(alloc, alphabet, minTransitions, minOutcomes, resolver)
 }

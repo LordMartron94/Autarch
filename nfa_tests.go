@@ -31,7 +31,16 @@ func TestNFA(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) []uint64 {
+		switch r {
+		case 'a':
+			return []uint64{0}
+		case 'b':
+			return []uint64{1}
+		default:
+			return nil
+		}
+	}
 
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
@@ -47,7 +56,7 @@ func TestNFA(t *testing.T) {
 		nil, // No epsilon edges
 		[]uint64{0},
 		[]bool{false, true},
-		indexer,
+		resolver,
 	)
 
 	type testCase struct {
@@ -121,7 +130,16 @@ func TestNFAEpsilon(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) []uint64 {
+		switch r {
+		case 'a':
+			return []uint64{0}
+		case 'b':
+			return []uint64{1}
+		default:
+			return nil
+		}
+	}
 
 	nfa := NFACreate(
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
@@ -137,7 +155,7 @@ func TestNFAEpsilon(t *testing.T) {
 		},
 		[]uint64{0},
 		[]bool{true, true}, // State 0 and State 1 outcomes (both "accept" in test)
-		indexer,
+		resolver,
 	)
 
 	type testCase struct {

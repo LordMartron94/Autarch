@@ -91,6 +91,22 @@ Edge cases:
 type SymbolIndexer[TObservation any] func(observation TObservation) []Symbol[TObservation]
 
 /*
+DeterministicSymbolResolver maps an observation to exactly one symbol ID or no symbol.
+
+Use this for deterministic automata (DFA/DPDA) where each observation must resolve
+to at most one symbol. Returned ok=false indicates invalid observation.
+*/
+type DeterministicSymbolResolver[TObservation any] func(observation TObservation) (symbolID uint64, ok bool)
+
+/*
+NondeterministicSymbolResolver maps an observation to zero or more symbol IDs.
+
+Use this for nondeterministic automata (NFA/NPDA) where an observation may fan out
+to multiple symbols. Empty output indicates invalid observation.
+*/
+type NondeterministicSymbolResolver[TObservation any] func(observation TObservation) []uint64
+
+/*
 Symbol represents a symbol in an automaton's alphabet with its identifier and description.
 
 The SymbolID is used for efficient transition table indexing, while SymbolDescription
@@ -179,6 +195,85 @@ func SymbolCreate[TObservation any](description string, id uint64) Symbol[TObser
 }
 
 /*
+SymbolResolverDeterministicToIndexer adapts a deterministic resolver to SymbolIndexer.
+*/
+func SymbolResolverDeterministicToIndexer[TObservation any](
+	alphabet []SymbolDefinition[TObservation],
+	resolver DeterministicSymbolResolver[TObservation],
+) SymbolIndexer[TObservation] {
+	return func(observation TObservation) []Symbol[TObservation] {
+		symbolID, ok := resolver(observation)
+		if !ok {
+			return nil
+		}
+		if symbolID >= uint64(len(alphabet)) {
+			return nil
+		}
+		return []Symbol[TObservation]{
+			SymbolCreate[TObservation](alphabet[symbolID].Name, symbolID),
+		}
+	}
+}
+
+/*
+SymbolResolverNondeterministicToIndexer adapts a nondeterministic resolver to SymbolIndexer.
+*/
+func SymbolResolverNondeterministicToIndexer[TObservation any](
+	alphabet []SymbolDefinition[TObservation],
+	resolver NondeterministicSymbolResolver[TObservation],
+) SymbolIndexer[TObservation] {
+	return func(observation TObservation) []Symbol[TObservation] {
+		ids := resolver(observation)
+		if len(ids) == 0 {
+			return nil
+		}
+
+		out := make([]Symbol[TObservation], 0, len(ids))
+		for _, id := range ids {
+			if id >= uint64(len(alphabet)) {
+				continue
+			}
+			out = append(out, SymbolCreate[TObservation](alphabet[id].Name, id))
+		}
+		return out
+	}
+}
+
+/*
+SymbolIndexerToDeterministicResolver adapts a SymbolIndexer to deterministic contract.
+*/
+func SymbolIndexerToDeterministicResolver[TObservation any](
+	indexer SymbolIndexer[TObservation],
+) DeterministicSymbolResolver[TObservation] {
+	return func(observation TObservation) (uint64, bool) {
+		symbols := indexer(observation)
+		if len(symbols) != 1 {
+			return 0, false
+		}
+		return symbols[0].SymbolID, true
+	}
+}
+
+/*
+SymbolIndexerToNondeterministicResolver adapts a SymbolIndexer to nondeterministic contract.
+*/
+func SymbolIndexerToNondeterministicResolver[TObservation any](
+	indexer SymbolIndexer[TObservation],
+) NondeterministicSymbolResolver[TObservation] {
+	return func(observation TObservation) []uint64 {
+		symbols := indexer(observation)
+		if len(symbols) == 0 {
+			return nil
+		}
+		out := make([]uint64, 0, len(symbols))
+		for _, symbol := range symbols {
+			out = append(out, symbol.SymbolID)
+		}
+		return out
+	}
+}
+
+/*
 SymbolIndexerBuild constructs a SymbolIndexer from an alphabet of symbol definitions.
 
 The function creates an indexer that tests each observation against all symbol definitions
@@ -204,6 +299,11 @@ Edge cases:
 - Multiple symbols can match the same observation
 - Match functions are called in order, so order matters for performance
 - Empty alphabet results in an indexer that always returns empty array
+
+Legacy note:
+- This is a compatibility builder that preserves predicate-based behavior.
+- Prefer deterministic/nondeterministic precomputed resolvers for runtime step paths
+  (DFA/DPDA: O(1)/O(log n), NFA/NPDA: resolver-cost + fanout).
 */
 func SymbolIndexerBuild[TObservation any](alphabet []SymbolDefinition[TObservation]) SymbolIndexer[TObservation] {
 	return func(observation TObservation) []Symbol[TObservation] {

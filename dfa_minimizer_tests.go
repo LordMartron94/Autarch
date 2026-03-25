@@ -38,7 +38,16 @@ func TestDFAMinimize(t *testing.T) {
 		{ID: 0, Name: "a", Match: func(r rune) bool { return r == 'a' }},
 		{ID: 1, Name: "b", Match: func(r rune) bool { return r == 'b' }},
 	}
-	indexer := SymbolIndexerBuild(alphabet)
+	resolver := func(r rune) (uint64, bool) {
+		switch r {
+		case 'a':
+			return 0, true
+		case 'b':
+			return 1, true
+		default:
+			return 0, false
+		}
+	}
 
 	// ───────────────────────────────────────────────────────────────
 	// 1. Create a Non-Minimal DFA (6 states)
@@ -70,7 +79,7 @@ func TestDFAMinimize(t *testing.T) {
 		},
 		// Accepting for 6 states: 0,1,2,3,4,5 → outcomes only (true = match)
 		[]bool{false, false, false, true, true, false},
-		indexer,
+		resolver,
 	)
 
 	// ───────────────────────────────────────────────────────────────

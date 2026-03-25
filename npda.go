@@ -181,10 +181,10 @@ Prerequisites:
 - Defensive limits (maxStackDepth, maxBranches, maxEpsilonSteps) must be set to avoid runaway execution
 */
 type NPDA[TObservation, TStateOutcome any] struct {
-	outcomes       memcore.MarkRaw
-	alphabet       []SymbolDefinition[TObservation]
-	startingStates []uint64
-	indexer        SymbolIndexer[TObservation]
+	outcomes                 memcore.MarkRaw
+	alphabet                 []SymbolDefinition[TObservation]
+	startingStates           []uint64
+	nondeterministicResolver NondeterministicSymbolResolver[TObservation]
 
 	transitionTable map[TransitionKey][]TransitionResult
 	numStates       uint64
@@ -232,7 +232,7 @@ func NPDACreate[TObservation, TStateOutcome any](
 	startingStates []uint64,
 	transitions []PDATransition,
 	outcomes []TStateOutcome,
-	indexer SymbolIndexer[TObservation],
+	resolver NondeterministicSymbolResolver[TObservation],
 	maxStackNodes uint64,
 	maxStackDepth uint64,
 	maxBranches uint64,
@@ -253,16 +253,16 @@ func NPDACreate[TObservation, TStateOutcome any](
 	stackAllocator := memforge.SlabAllocatorCreate[StackNode](maxStackNodes)
 
 	return &NPDA[TObservation, TStateOutcome]{
-		outcomes:        outcomeTable,
-		alphabet:        alphabet,
-		startingStates:  startingStates,
-		indexer:         indexer,
-		transitionTable: transitionTable,
-		numStates:       numStates,
-		stackAllocator:  stackAllocator,
-		maxStackDepth:   maxStackDepth,
-		maxBranches:     maxBranches,
-		maxEpsilonSteps: maxEpsilonSteps,
+		outcomes:                 outcomeTable,
+		alphabet:                 alphabet,
+		startingStates:           startingStates,
+		nondeterministicResolver: resolver,
+		transitionTable:          transitionTable,
+		numStates:                numStates,
+		stackAllocator:           stackAllocator,
+		maxStackDepth:            maxStackDepth,
+		maxBranches:              maxBranches,
+		maxEpsilonSteps:          maxEpsilonSteps,
 	}
 }
 
@@ -282,20 +282,6 @@ Prerequisites:
 */
 func NPDADestroy[TObservation, TStateOutcome any](npda *NPDA[TObservation, TStateOutcome]) {
 	memforge.SlabAllocatorDestroy[StackNode](npda.stackAllocator)
-}
-
-/*
-NPDAIndexerGet returns the symbol indexer function used to map observations to symbol IDs.
-
-Use cases:
-- Inspecting or wrapping the indexer (e.g., logging, debugging)
-- Reusing the same indexer for another automaton or validation
-
-Time complexity: O(1)
-Space complexity: O(1)
-*/
-func NPDAIndexerGet[TObservation, TStateOutcome any](npda *NPDA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
-	return npda.indexer
 }
 
 /*
@@ -522,8 +508,8 @@ func stepAllConfigs[TObservation, TStateOutcome any](
 	observation TObservation,
 ) ([]NPDAConfig, error) {
 
-	symbols := npda.indexer(observation)
-	if len(symbols) == 0 {
+	symbolIDs := npda.nondeterministicResolver(observation)
+	if len(symbolIDs) == 0 {
 		return nil, &AutomatonError{
 			Kind:      AutomatonErrorInvalidSymbolNPDA,
 			Automaton: "NPDA",
@@ -540,8 +526,8 @@ func stepAllConfigs[TObservation, TStateOutcome any](
 
 		topSymbol := getStackTopSymbol(config)
 
-		for _, symbol := range symbols {
-			nextConfigs = processSymbolTransitions(npda, config, symbol.SymbolID, topSymbol, nextConfigs)
+		for _, symbolID := range symbolIDs {
+			nextConfigs = processSymbolTransitions(npda, config, symbolID, topSymbol, nextConfigs)
 		}
 	}
 

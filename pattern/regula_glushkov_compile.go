@@ -485,7 +485,7 @@ func buildGlushkovNFA[TObs any, TOutcome comparable](
 		nil,
 		[]uint64{0},
 		outcomes,
-		ctx.indexer,
+		ctx.nondeterministicResolve,
 	)
 }
 

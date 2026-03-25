@@ -103,10 +103,14 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 	nfa *NFA[TSymbol, TStateOutcome],
 	minMem, maxMem memcore.MemoryUnitBytes,
 	dfaAlloc memarch.AllocationFn,
+	deterministicResolver DeterministicSymbolResolver[TSymbol],
 	resFn OutcomeResolutionFn[TStateOutcome],
 ) *DFA[TSymbol, TStateOutcome] {
 	if resFn == nil {
 		resFn = OutcomeResolutionFirst[TStateOutcome]
+	}
+	if deterministicResolver == nil {
+		panic("NFAToDFA: deterministic resolver is required")
 	}
 
 	allocHandle := createTempAllocator(minMem, maxMem)
@@ -202,12 +206,22 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 		}
 	}
 
+	for _, symDef := range alphabet {
+		if symDef.Observation == nil {
+			continue
+		}
+		symbolID, ok := deterministicResolver(*symDef.Observation)
+		if !ok || symbolID >= uint64(len(alphabet)) {
+			panic(fmt.Errorf("NFAToDFA: deterministic resolver produced invalid symbol for ID=%d name=%q", symDef.ID, symDef.Name))
+		}
+	}
+
 	return DFACreate(
 		dfaAlloc,
 		alphabet,
 		transitions,
 		registry.outcomes,
-		NFAIndexerGet(nfa),
+		deterministicResolver,
 	)
 }
 

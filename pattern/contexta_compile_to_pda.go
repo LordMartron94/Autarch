@@ -106,9 +106,11 @@ Use CompileNPDA or CompileDPDA for a full automaton; use CompilerCreate and Comp
 transitions and a debug map only.
 */
 type LLCompiler[TObservation comparable, TMeta any] struct {
-	grammar *Grammar[TObservation, TMeta]
-	mode    CompilerMode
-	indexer autarch.SymbolIndexer[TObservation]
+	grammar                 *Grammar[TObservation, TMeta]
+	mode                    CompilerMode
+	indexer                 autarch.SymbolIndexer[TObservation]
+	deterministicResolver   autarch.DeterministicSymbolResolver[TObservation]
+	nondeterministicResolve autarch.NondeterministicSymbolResolver[TObservation]
 
 	// Predictive analysis (populated only in DPDA mode)
 	analysis *GrammarAnalysis[TObservation]
@@ -138,18 +140,21 @@ Space complexity: O(grammar + analysis)
 func CompilerCreate[TObservation comparable, TMeta any](
 	grammar *Grammar[TObservation, TMeta],
 	mode CompilerMode,
-	indexer autarch.SymbolIndexer[TObservation],
+	deterministicResolver autarch.DeterministicSymbolResolver[TObservation],
+	nondeterministicResolve autarch.NondeterministicSymbolResolver[TObservation],
 ) *LLCompiler[TObservation, TMeta] {
 	c := &LLCompiler[TObservation, TMeta]{
-		grammar:           grammar,
-		mode:              mode,
-		indexer:           indexer,
-		nextStackID:       BottomMarkerID + 1,
-		symbolMap:         make(map[string]autarch.StackSymbolID),
-		terminalToStackID: make(map[TObservation]autarch.StackSymbolID),
-		transitions:       make([]autarch.PDATransition, 0),
-		nextStateID:       StateAccept + 1,
-		terminalIDs:       make([]autarch.StackSymbolID, 0),
+		grammar:                 grammar,
+		mode:                    mode,
+		indexer:                 nil,
+		deterministicResolver:   deterministicResolver,
+		nondeterministicResolve: nondeterministicResolve,
+		nextStackID:             BottomMarkerID + 1,
+		symbolMap:               make(map[string]autarch.StackSymbolID),
+		terminalToStackID:       make(map[TObservation]autarch.StackSymbolID),
+		transitions:             make([]autarch.PDATransition, 0),
+		nextStateID:             StateAccept + 1,
+		terminalIDs:             make([]autarch.StackSymbolID, 0),
 	}
 
 	if mode == MODE_DPDA {
@@ -309,12 +314,21 @@ func (c *LLCompiler[TObservation, TMeta]) computePredictiveSet(ntName string, pr
 	// Resolve each terminal in the set to alphabet symbol ID(s) via indexer
 	seen := make(map[uint64]struct{})
 	for obs := range firstSet {
-		syms := c.indexer(obs)
-		if len(syms) == 0 {
+		if c.mode == MODE_DPDA {
+			id, ok := c.deterministicResolver(obs)
+			if !ok {
+				panic(fmt.Sprintf("grammar terminal %v not in alphabet (resolver returned no symbol)", obs))
+			}
+			seen[id] = struct{}{}
+			continue
+		}
+
+		ids := c.nondeterministicResolve(obs)
+		if len(ids) == 0 {
 			panic(fmt.Sprintf("grammar terminal %v not in alphabet (indexer returned no symbol)", obs))
 		}
-		for _, s := range syms {
-			seen[s.SymbolID] = struct{}{}
+		for _, id := range ids {
+			seen[id] = struct{}{}
 		}
 	}
 	out := make([]uint64, 0, len(seen))
@@ -334,17 +348,38 @@ func (c *LLCompiler[TObservation, TMeta]) resolveSymbolID(sym Symbol[TObservatio
 	}
 
 	obs := sym.Token
-	syms := c.indexer(obs)
-	if len(syms) == 0 {
-		panic(fmt.Sprintf("grammar terminal %v not in alphabet (indexer returned no symbol)", obs))
-	}
-	if c.mode == MODE_DPDA && len(syms) != 1 {
-		panic(fmt.Sprintf("DPDA requires exactly one symbol per observation; indexer returned %d for %v", len(syms), obs))
-	}
-	inputID := syms[0].SymbolID
 	stackID := c.getTerminalStackID(obs)
 
-	if !c.hasMatchTransition(inputID, stackID) {
+	if c.mode == MODE_DPDA {
+		inputID, ok := c.deterministicResolver(obs)
+		if !ok {
+			panic(fmt.Sprintf("grammar terminal %v not in alphabet (resolver returned no symbol)", obs))
+		}
+		if !c.hasMatchTransition(inputID, stackID) {
+			c.transitions = append(c.transitions, autarch.PDATransition{
+				Key: autarch.TransitionKey{
+					StateID:  StateLoop,
+					InputID:  inputID,
+					StackTop: stackID,
+				},
+				Result: autarch.TransitionResult{
+					NextStateID: StateLoop,
+					StackOp:     autarch.STACK_POP,
+				},
+			})
+		}
+		c.terminalIDs = append(c.terminalIDs, stackID)
+		return stackID
+	}
+
+	inputIDs := c.nondeterministicResolve(obs)
+	if len(inputIDs) == 0 {
+		panic(fmt.Sprintf("grammar terminal %v not in alphabet (resolver returned no symbol)", obs))
+	}
+	for _, inputID := range inputIDs {
+		if c.hasMatchTransition(inputID, stackID) {
+			continue
+		}
 		c.transitions = append(c.transitions, autarch.PDATransition{
 			Key: autarch.TransitionKey{
 				StateID:  StateLoop,
@@ -356,8 +391,8 @@ func (c *LLCompiler[TObservation, TMeta]) resolveSymbolID(sym Symbol[TObservatio
 				StackOp:     autarch.STACK_POP,
 			},
 		})
-		c.terminalIDs = append(c.terminalIDs, stackID)
 	}
+	c.terminalIDs = append(c.terminalIDs, stackID)
 
 	return stackID
 }
@@ -418,15 +453,20 @@ func CompileNPDA[TObservation comparable, TMeta any, TOutcome any](
 	grammar *Grammar[TObservation, TMeta],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
-	indexer autarch.SymbolIndexer[TObservation],
+	deterministicResolver autarch.DeterministicSymbolResolver[TObservation],
+	nondeterministicResolve autarch.NondeterministicSymbolResolver[TObservation],
 	acceptOutcome TOutcome,
 	maxStackNodes uint64,
 	maxStackDepth uint64,
 	maxBranches uint64,
 	maxEpsilonSteps uint64,
 ) (*autarch.NPDA[TObservation, AnnotatedOutcome[TOutcome]], []autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
-
-	compiler := CompilerCreate(grammar, MODE_NPDA, indexer)
+	compiler := CompilerCreate(
+		grammar,
+		MODE_NPDA,
+		deterministicResolver,
+		nondeterministicResolve,
+	)
 	transitions, debugMap, err := compiler.Compile()
 	if err != nil {
 		return nil, transitions, debugMap, wrapContextaGrammarError("NPDA", err, 0)
@@ -450,7 +490,7 @@ func CompileNPDA[TObservation comparable, TMeta any, TOutcome any](
 		[]uint64{StateInit},
 		transitions,
 		outcomes,
-		indexer,
+		nondeterministicResolve,
 		maxStackNodes,
 		maxStackDepth,
 		maxBranches,
@@ -488,12 +528,22 @@ func CompileDPDA[TObservation comparable, TMeta any, TOutcome any](
 	grammar *Grammar[TObservation, TMeta],
 	allocFn memarch.AllocationFn,
 	alphabet []autarch.SymbolDefinition[TObservation],
-	indexer autarch.SymbolIndexer[TObservation],
+	deterministicResolver autarch.DeterministicSymbolResolver[TObservation],
 	acceptOutcome TOutcome,
 	maxEpsilonSteps uint64,
 ) (*autarch.DPDA[TObservation, AnnotatedOutcome[TOutcome]], []autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
-
-	compiler := CompilerCreate(grammar, MODE_DPDA, indexer)
+	compiler := CompilerCreate(
+		grammar,
+		MODE_DPDA,
+		deterministicResolver,
+		func(observation TObservation) []uint64 {
+			id, ok := deterministicResolver(observation)
+			if !ok {
+				return nil
+			}
+			return []uint64{id}
+		},
+	)
 	transitions, debugMap, err := compiler.Compile()
 	if err != nil {
 		return nil, transitions, debugMap, wrapContextaGrammarError("DPDA", err, 0)
@@ -517,7 +567,7 @@ func CompileDPDA[TObservation comparable, TMeta any, TOutcome any](
 		StateInit,
 		transitions,
 		outcomes,
-		indexer,
+		deterministicResolver,
 		compiler.terminalIDs,
 		maxEpsilonSteps,
 	)

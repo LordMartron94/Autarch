@@ -41,7 +41,7 @@ type DFA[TObservation, TStateOutcome any] struct {
 	outcomes    memcore.MarkRaw // Array[TStateOutcome]
 	transitions memcore.MarkRaw // Array[uint64]
 
-	indexer SymbolIndexer[TObservation]
+	deterministicResolver DeterministicSymbolResolver[TObservation]
 
 	alphabet     []SymbolDefinition[TObservation]
 	numStates    uint64
@@ -72,27 +72,6 @@ Edge cases:
 */
 func DFAOutcomesGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memcore.MarkRaw {
 	return dfa.outcomes
-}
-
-/*
-DFAIndexerGet retrieves the symbol indexer function for the DFA.
-
-The indexer maps observations to symbols, enabling the DFA to process input
-and determine valid transitions.
-
-Use cases:
-- Accessing the indexer for custom processing
-- Building compatible automata with the same alphabet
-- Debugging symbol mapping issues
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- dfa must be a valid DFA instance
-*/
-func DFAIndexerGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) SymbolIndexer[TObservation] {
-	return dfa.indexer
 }
 
 /*
@@ -189,7 +168,7 @@ func DFACreate[TObservation, TStateOutcome any](
 	alphabet []SymbolDefinition[TObservation],
 	transitions []Transition[TObservation],
 	outcomes []TStateOutcome,
-	indexer SymbolIndexer[TObservation],
+	resolver DeterministicSymbolResolver[TObservation],
 ) *DFA[TObservation, TStateOutcome] {
 	validateAlphabet(alphabet, "dfa")
 
@@ -301,13 +280,13 @@ func DFACreate[TObservation, TStateOutcome any](
 	// Construct DFA object
 	// ───────────────────────────────────────────────────────────────
 	return &DFA[TObservation, TStateOutcome]{
-		outcomes:     outcomeTable,
-		transitions:  transitionArray,
-		indexer:      indexer,
-		numStates:    numStates,
-		alphabetSize: alphabetSize,
-		alphabet:     alphabet,
-		deadStates:   deadStates,
+		outcomes:              outcomeTable,
+		transitions:           transitionArray,
+		deterministicResolver: resolver,
+		numStates:             numStates,
+		alphabetSize:          alphabetSize,
+		alphabet:              alphabet,
+		deadStates:            deadStates,
 	}
 }
 
@@ -370,8 +349,8 @@ func DFARun[TObservation, TStateOutcome any](
 	arrayCursor := memstruct.ArrayCursorCreate[uint64](dfa.transitions) // cursor to avoid dereffing the array header each time
 
 	for _, observation := range input {
-		symbols := dfa.indexer(observation)
-		if len(symbols) == 0 {
+		symbolID, ok := dfa.deterministicResolver(observation)
+		if !ok {
 			var zero TStateOutcome
 			return zero, &AutomatonError{
 				Kind:      AutomatonErrorInvalidSymbolFinite,
@@ -379,19 +358,7 @@ func DFARun[TObservation, TStateOutcome any](
 				Message:   fmt.Sprintf("invalid symbol: %v", observation),
 			}
 		}
-
-		if len(symbols) != 1 {
-			panic(fmt.Errorf(
-				"DFA invariant violated: observation %v matched %d symbols: %v",
-				observation,
-				len(symbols),
-				symbols,
-			))
-		}
-
-		symbol := symbols[0]
-
-		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbol.SymbolID)
+		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbolID)
 		newState := arrayCursor.PtrAt(transitionIDX)
 		state = *newState
 	}
@@ -848,8 +815,8 @@ func DFAStep[TObservation, TStateOutcome any](
 	observation TObservation,
 	arrayCursor memstruct.ArrayCursor[uint64],
 ) (uint64, error) {
-	symbols := dfa.indexer(observation)
-	if len(symbols) == 0 {
+	symbolID, ok := dfa.deterministicResolver(observation)
+	if !ok {
 		var zero uint64
 		return zero, &AutomatonError{
 			Kind:      AutomatonErrorInvalidSymbolFinite,
@@ -857,19 +824,7 @@ func DFAStep[TObservation, TStateOutcome any](
 			Message:   fmt.Sprintf("invalid symbol: %v", observation),
 		}
 	}
-
-	if len(symbols) != 1 {
-		panic(fmt.Errorf(
-			"DFA invariant violated: observation %v matched %d symbols: %v",
-			observation,
-			len(symbols),
-			symbols,
-		))
-	}
-
-	symbol := symbols[0]
-
-	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbol.SymbolID)
+	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbolID)
 	newState := arrayCursor.PtrAt(transitionIDX)
 	return *newState, nil
 }
