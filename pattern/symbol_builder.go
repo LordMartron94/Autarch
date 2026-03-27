@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"foundation/domain"
 	"slices"
+	"unsafe"
 )
 
 // ------------------------------------------------------- TYPES
@@ -272,6 +273,9 @@ func buildDeterministicResolver[TObs any](
 	if dense, ok := buildDenseByteResolver(intervals, observationDomain); ok {
 		return dense
 	}
+	if runeResolver, ok := buildRuneIntervalResolver(intervals, observationDomain); ok {
+		return runeResolver
+	}
 	return buildIntervalResolver(intervals, observationDomain)
 }
 
@@ -369,11 +373,89 @@ func buildDenseByteResolver[TObs any](
 	}
 
 	return func(observation TObs) (uint64, bool) {
-		obs, ok := any(observation).(byte)
-		if !ok || !valid[obs] {
+		obs := *(*byte)(unsafe.Pointer(&observation))
+		if !valid[obs] {
 			return 0, false
 		}
 		return table[obs], true
+	}, true
+}
+
+func buildRuneIntervalResolver[TObs any](
+	intervals []symbolInterval[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) (autarch.DeterministicSymbolResolver[TObs], bool) {
+	min, minOK := any(observationDomain.Min).(rune)
+	max, maxOK := any(observationDomain.Max).(rune)
+	if !minOK || !maxOK || min != 0 || max != 0x10FFFF {
+		return nil, false
+	}
+
+	const asciiLimit = 128
+	const missingID = int64(-1)
+
+	asciiTable := [asciiLimit]int64{}
+	for idx := range asciiTable {
+		asciiTable[idx] = missingID
+	}
+
+	runeIntervals := make([]symbolInterval[rune], 0, len(intervals))
+	for _, entry := range intervals {
+		lo, loOK := any(entry.lo).(rune)
+		hi, hiOK := any(entry.hi).(rune)
+		if !loOK || !hiOK {
+			return nil, false
+		}
+
+		runeIntervals = append(runeIntervals, symbolInterval[rune]{
+			lo:       lo,
+			hi:       hi,
+			symbolID: entry.symbolID,
+		})
+
+		if lo >= asciiLimit {
+			continue
+		}
+
+		asciiLo := lo
+		if asciiLo < 0 {
+			asciiLo = 0
+		}
+		asciiHi := hi
+		if asciiHi >= asciiLimit {
+			asciiHi = asciiLimit - 1
+		}
+		for asciiRune := asciiLo; asciiRune <= asciiHi; asciiRune++ {
+			asciiTable[asciiRune] = int64(entry.symbolID)
+		}
+	}
+
+	return func(observation TObs) (uint64, bool) {
+		obsRune := *(*rune)(unsafe.Pointer(&observation))
+		if uint32(obsRune) < asciiLimit {
+			symbolID := asciiTable[obsRune]
+			if symbolID < 0 {
+				return 0, false
+			}
+			return uint64(symbolID), true
+		}
+
+		left := 0
+		right := len(runeIntervals) - 1
+		for left <= right {
+			mid := left + (right-left)/2
+			entry := runeIntervals[mid]
+			if obsRune < entry.lo {
+				right = mid - 1
+				continue
+			}
+			if obsRune > entry.hi {
+				left = mid + 1
+				continue
+			}
+			return entry.symbolID, true
+		}
+		return 0, false
 	}, true
 }
 
