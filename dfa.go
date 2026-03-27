@@ -41,6 +41,9 @@ type DFA[TObservation, TStateOutcome any] struct {
 	outcomes    memcore.MarkRaw // Array[TStateOutcome]
 	transitions memcore.MarkRaw // Array[uint64]
 
+	outcomesCursor    memstruct.ArrayCursor[TStateOutcome]
+	transitionsCursor memstruct.ArrayCursor[uint64]
+
 	deterministicResolver DeterministicSymbolResolver[TObservation]
 
 	alphabet     []SymbolDefinition[TObservation]
@@ -282,6 +285,8 @@ func DFACreate[TObservation, TStateOutcome any](
 	return &DFA[TObservation, TStateOutcome]{
 		outcomes:              outcomeTable,
 		transitions:           transitionArray,
+		outcomesCursor:        memstruct.ArrayCursorCreate[TStateOutcome](outcomeTable),
+		transitionsCursor:     memstruct.ArrayCursorCreate[uint64](transitionArray),
 		deterministicResolver: resolver,
 		numStates:             numStates,
 		alphabetSize:          alphabetSize,
@@ -346,7 +351,6 @@ func DFARun[TObservation, TStateOutcome any](
 	input []TObservation,
 ) (outcome TStateOutcome, err error) {
 	state := uint64(0)
-	arrayCursor := memstruct.ArrayCursorCreate[uint64](dfa.transitions) // cursor to avoid dereffing the array header each time
 
 	for _, observation := range input {
 		symbolID, ok := dfa.deterministicResolver(observation)
@@ -359,11 +363,11 @@ func DFARun[TObservation, TStateOutcome any](
 			}
 		}
 		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbolID)
-		newState := arrayCursor.PtrAt(transitionIDX)
+		newState := dfa.transitionsCursor.PtrAt(transitionIDX)
 		state = *newState
 	}
 
-	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
+	outcome = *dfa.outcomesCursor.PtrAt(state)
 	return outcome, nil
 }
 
@@ -716,7 +720,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 }
 
 /*
-DFACursorGet creates an array cursor for efficient transition table access.
+DFACursorGet returns the cached transition-table cursor for efficient access.
 
 The cursor provides optimized access to the transition table without repeated
 array header dereferencing, improving performance in hot loops.
@@ -737,7 +741,7 @@ Edge cases:
 - Multiple cursors can be created for parallel processing
 */
 func DFACursorGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memstruct.ArrayCursor[uint64] {
-	return memstruct.ArrayCursorCreate[uint64](dfa.transitions)
+	return dfa.transitionsCursor
 }
 
 /*
@@ -861,7 +865,7 @@ func DFAStateOutcome[TObservation, TStateOutcome any](
 			dfa.numStates-1,
 		))
 	}
-	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
+	outcome = *dfa.outcomesCursor.PtrAt(state)
 	return outcome, true
 }
 
