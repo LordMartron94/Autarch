@@ -34,6 +34,13 @@ const (
 )
 
 /*
+StartStateID is the canonical starting state for deterministic automata in autarch.
+
+DFAs in autarch always begin execution from this state.
+*/
+const StartStateID uint64 = 0
+
+/*
 SymbolKey represents a unique identifier for a symbol definition.
 
 SymbolKey combines a SymbolKind with a hash value to create a unique identity
@@ -301,9 +308,9 @@ Edge cases:
 - Empty alphabet results in an indexer that always returns empty array
 
 Legacy note:
-- This is a compatibility builder that preserves predicate-based behavior.
-- Prefer deterministic/nondeterministic precomputed resolvers for runtime step paths
-  (DFA/DPDA: O(1)/O(log n), NFA/NPDA: resolver-cost + fanout).
+  - This is a compatibility builder that preserves predicate-based behavior.
+  - Prefer deterministic/nondeterministic precomputed resolvers for runtime step paths
+    (DFA/DPDA: O(1)/O(log n), NFA/NPDA: resolver-cost + fanout).
 */
 func SymbolIndexerBuild[TObservation any](alphabet []SymbolDefinition[TObservation]) SymbolIndexer[TObservation] {
 	return func(observation TObservation) []Symbol[TObservation] {

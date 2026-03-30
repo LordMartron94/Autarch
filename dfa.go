@@ -350,7 +350,7 @@ func DFARun[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	input []TObservation,
 ) (outcome TStateOutcome, err error) {
-	state := uint64(0)
+	state := StartStateID
 
 	for _, observation := range input {
 		symbolID, ok := dfa.deterministicResolver(observation)
