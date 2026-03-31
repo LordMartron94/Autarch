@@ -415,7 +415,21 @@ func DFAAvailableSymbols[TObservation, TStateOutcome any](
 			dfa.numStates,
 		))
 	}
+	return DFAAvailableSymbolsUnsafe(dfa, state)
+}
 
+/*
+DFAAvailableSymbolsUnsafe returns all transition symbols from state without bounds checks.
+
+Use this in validated hot paths where caller guarantees:
+- state < dfa.numStates
+
+This function skips state-range validation to reduce overhead.
+*/
+func DFAAvailableSymbolsUnsafe[TObservation, TStateOutcome any](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) []SymbolDefinition[TObservation] {
 	rowStart := state * dfa.alphabetSize
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
@@ -483,7 +497,24 @@ func DFATransitionsFrom[TObservation, TStateOutcome any](
 			dfa.numStates-1,
 		))
 	}
+	return DFATransitionsFromUnsafe(dfa, state)
+}
 
+/*
+DFATransitionsFromUnsafe returns outgoing transitions without bounds checks.
+
+Use this in validated hot paths where caller guarantees:
+- state < dfa.numStates
+
+This function skips state-range validation to reduce overhead.
+*/
+func DFATransitionsFromUnsafe[TObservation, TStateOutcome any](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) []struct {
+	Symbol SymbolDefinition[TObservation]
+	Target uint64
+} {
 	rowStart := state * dfa.alphabetSize
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
@@ -877,8 +908,24 @@ func DFAStateOutcome[TObservation, TStateOutcome any](
 			dfa.numStates-1,
 		))
 	}
-	outcome = *dfa.outcomesCursor.PtrAt(state)
+	outcome = DFAStateOutcomeUnsafe(dfa, state)
 	return outcome, true
+}
+
+/*
+DFAStateOutcomeUnsafe retrieves a state's outcome without bounds checks.
+
+Use this in validated hot paths where caller guarantees:
+- state < dfa.numStates
+
+This function skips state-range validation to reduce overhead.
+*/
+func DFAStateOutcomeUnsafe[TObservation, TStateOutcome any](
+	dfa *DFA[TObservation, TStateOutcome],
+	state uint64,
+) (outcome TStateOutcome) {
+	outcome = *dfa.outcomesCursor.PtrAt(state)
+	return outcome
 }
 
 /*
