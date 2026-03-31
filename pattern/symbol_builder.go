@@ -273,6 +273,9 @@ func buildDeterministicResolver[TObs any](
 	if dense, ok := buildDenseByteResolver(intervals, observationDomain); ok {
 		return dense
 	}
+	if twoLevel, ok := buildRuneTwoLevelResolver(intervals, observationDomain); ok {
+		return twoLevel
+	}
 	if runeResolver, ok := buildRuneIntervalResolver(intervals, observationDomain); ok {
 		return runeResolver
 	}
@@ -456,6 +459,128 @@ func buildRuneIntervalResolver[TObs any](
 			return entry.symbolID, true
 		}
 		return 0, false
+	}, true
+}
+
+/*
+buildRuneTwoLevelResolver builds a sparse two-level rune lookup table.
+
+This keeps ASCII on a direct table and resolves non-ASCII using:
+  - level1 index: hi = rune >> 8
+  - level2 page: lo = rune & 0xFF
+
+Why this concrete design:
+- avoids branch-heavy binary search in the non-ASCII path
+- keeps memory sparse by allocating only used pages
+- keeps hot-path dispatch concrete (no interface indirection)
+*/
+func buildRuneTwoLevelResolver[TObs any](
+	intervals []symbolInterval[TObs],
+	observationDomain *domain.DiscreteDomain[TObs],
+) (autarch.DeterministicSymbolResolver[TObs], bool) {
+	min, minOK := any(observationDomain.Min).(rune)
+	max, maxOK := any(observationDomain.Max).(rune)
+	if !minOK || !maxOK || min != 0 || max != 0x10FFFF {
+		return nil, false
+	}
+
+	const asciiLimit = 128
+	const missingID = int64(-1)
+	const pageSize = 256
+	const level1Size = (0x10FFFF >> 8) + 1 // 0x1100 pages
+
+	asciiTable := [asciiLimit]int64{}
+	for idx := range asciiTable {
+		asciiTable[idx] = missingID
+	}
+
+	level1 := make([][]int64, level1Size)
+
+	for _, entry := range intervals {
+		lo, loOK := any(entry.lo).(rune)
+		hi, hiOK := any(entry.hi).(rune)
+		if !loOK || !hiOK {
+			return nil, false
+		}
+		if lo < 0 {
+			lo = 0
+		}
+		if hi < lo {
+			continue
+		}
+
+		if lo < asciiLimit {
+			asciiHi := hi
+			if asciiHi >= asciiLimit {
+				asciiHi = asciiLimit - 1
+			}
+			for asciiRune := lo; asciiRune <= asciiHi; asciiRune++ {
+				asciiTable[asciiRune] = int64(entry.symbolID)
+			}
+		}
+
+		for current := lo; current <= hi; {
+			hiIndex := int(uint32(current) >> 8)
+			if hiIndex < 0 || hiIndex >= len(level1) {
+				break
+			}
+
+			page := level1[hiIndex]
+			if page == nil {
+				page = make([]int64, pageSize)
+				for i := range page {
+					page[i] = missingID
+				}
+				level1[hiIndex] = page
+			}
+
+			pageStart := rune(hiIndex << 8)
+			pageEnd := pageStart + 0xFF
+			writeHi := hi
+			if writeHi > pageEnd {
+				writeHi = pageEnd
+			}
+
+			for r := current; r <= writeHi; r++ {
+				page[int(uint32(r)&0xFF)] = int64(entry.symbolID)
+			}
+
+			if writeHi == hi || writeHi == 0x10FFFF {
+				break
+			}
+			current = writeHi + 1
+		}
+	}
+
+	return func(observation TObs) (uint64, bool) {
+		obsRune := *(*rune)(unsafe.Pointer(&observation))
+		if obsRune < 0 {
+			return 0, false
+		}
+
+		if uint32(obsRune) < asciiLimit {
+			symbolID := asciiTable[obsRune]
+			if symbolID < 0 {
+				return 0, false
+			}
+			return uint64(symbolID), true
+		}
+
+		hiIndex := int(uint32(obsRune) >> 8)
+		if hiIndex < 0 || hiIndex >= len(level1) {
+			return 0, false
+		}
+
+		page := level1[hiIndex]
+		if page == nil {
+			return 0, false
+		}
+
+		symbolID := page[int(uint32(obsRune)&0xFF)]
+		if symbolID < 0 {
+			return 0, false
+		}
+		return uint64(symbolID), true
 	}, true
 }
 
