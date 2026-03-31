@@ -745,6 +745,18 @@ func DFACursorGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TState
 }
 
 /*
+DFARefreshCursors forces the DFA to rebuild its internal high-performance cursors
+from its MarkRaw pointers.
+
+Call this immediately after any bulk memory reallocations that move the underlying
+arena to ensure the cached absolute pointers are mathematically valid.
+*/
+func DFARefreshCursors[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) {
+	dfa.outcomesCursor = memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
+	dfa.transitionsCursor = memstruct.ArrayCursorCreate[uint64](dfa.transitions)
+}
+
+/*
 DFAPredecessorSets computes all predecessor states for each state-symbol combination.
 
 The result is a three-dimensional structure: [symbolID][targetState][]predecessorStates.
