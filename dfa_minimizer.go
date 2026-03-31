@@ -169,11 +169,15 @@ func buildMinimizedDFA[TO any, TR any](
 		for symID := uint64(0); symID < uint64(len(alphabet)); symID++ {
 			oldIdx := getTransitionIDX(uint64(len(alphabet)), rep, symID)
 			oldTarget := memstruct.ArrayItemGetAtUnsafe[uint64](oldDFA.transitions, oldIdx)
+			newTarget := DeadState
+			if oldTarget != DeadState {
+				newTarget = stateToBlock[oldTarget]
+			}
 
 			minTransitions = append(minTransitions, Transition[TO]{
 				CurrentState: uint64(bid),
 				Symbol:       SymbolCreate[TO](alphabet[symID].Name, symID),
-				NextState:    stateToBlock[oldTarget],
+				NextState:    newTarget,
 			})
 		}
 	}

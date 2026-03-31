@@ -153,12 +153,6 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 	_ = registry.register(entrySub, nfa, resFn)   // ID 0
 	memstruct.QueuePushUnsafe(worklist, entrySub) // first processed subset
 
-	// Sink (empty subset) is created lazily, exactly when first needed,
-	// matching the old discovery order.
-	var sinkInit bool
-	var sinkID uint64
-	var sinkSub dfaStateSubset
-
 	// -----------------------------------------------------------------
 	// 2) Subset construction loop (ordering matches OLD)
 	//    - BFS by queue order starting from entry
@@ -176,16 +170,8 @@ func NFAToDFA[TSymbol, TStateOutcome any](
 
 			var nextID uint64
 			if len(moveCtx.scratch) == 0 {
-				// No move targets => empty subset transition.
-				// Create & enqueue sink the first time it is encountered
-				// (same as OLD, which discovers it on demand).
-				if !sinkInit {
-					sinkSub = *dfaStateSubsetCreate(nfaStateCount, nil) // all-zero bitset
-					sinkID = registry.register(sinkSub, nfa, resFn)
-					memstruct.QueuePushUnsafe(worklist, sinkSub)
-					sinkInit = true
-				}
-				nextID = sinkID
+				// No move targets => encode dead transition directly.
+				nextID = DeadState
 			} else {
 				closure := NFAEpsilonClosureCompute(nfa, moveCtx.scratch)
 				nextSub := *dfaStateSubsetCreate(nfaStateCount, closure)

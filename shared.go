@@ -41,6 +41,14 @@ DFAs in autarch always begin execution from this state.
 const StartStateID uint64 = 0
 
 /*
+DeadState is a sentinel transition target indicating no valid next state.
+
+DFAs in autarch encode dead transitions directly in the transition table
+using this value instead of allocating a dedicated dead-state row.
+*/
+const DeadState uint64 = ^uint64(0)
+
+/*
 SymbolKey represents a unique identifier for a symbol definition.
 
 SymbolKey combines a SymbolKind with a hash value to create a unique identity

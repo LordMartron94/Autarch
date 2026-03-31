@@ -49,8 +49,6 @@ type DFA[TObservation, TStateOutcome any] struct {
 	alphabet     []SymbolDefinition[TObservation]
 	numStates    uint64
 	alphabetSize uint64
-
-	deadStates []bool
 }
 
 /*
@@ -224,10 +222,16 @@ func DFACreate[TObservation, TStateOutcome any](
 			))
 		}
 
-		if t.CurrentState >= numStates || t.NextState >= numStates {
+		if t.CurrentState >= numStates {
 			panic(fmt.Errorf(
-				"DFACreate: transition refers to invalid state: %d → %d (max %d)",
+				"DFACreate: transition refers to invalid current state: %d (max %d)",
 				t.CurrentState,
+				numStates-1,
+			))
+		}
+		if t.NextState >= numStates && t.NextState != DeadState {
+			panic(fmt.Errorf(
+				"DFACreate: transition refers to invalid next state: %d (max %d or DeadState)",
 				t.NextState,
 				numStates-1,
 			))
@@ -262,23 +266,6 @@ func DFACreate[TObservation, TStateOutcome any](
 		}
 	}
 
-	deadStates := make([]bool, numStates)
-
-	transCur := memstruct.ArrayCursorCreate[uint64](transitionArray)
-
-	for s := uint64(0); s < numStates; s++ {
-		row := s * alphabetSize
-		isDead := true
-
-		for a := uint64(0); a < alphabetSize; a++ {
-			if *transCur.PtrAt(row + a) != s {
-				isDead = false
-				break
-			}
-		}
-		deadStates[s] = isDead
-	}
-
 	// ───────────────────────────────────────────────────────────────
 	// Construct DFA object
 	// ───────────────────────────────────────────────────────────────
@@ -291,7 +278,6 @@ func DFACreate[TObservation, TStateOutcome any](
 		numStates:             numStates,
 		alphabetSize:          alphabetSize,
 		alphabet:              alphabet,
-		deadStates:            deadStates,
 	}
 }
 
@@ -376,11 +362,11 @@ DFAAvailableSymbols returns all observation symbols that can legally transition
 from the given DFA state.
 
 This exposes the DFA frontier at a specific state — i.e. the set of input symbols
-for which a transition exists (non-dead transition). It is primarily used for
+for which a transition exists (non-DeadState transition). It is primarily used for
 diagnostics, error reporting, recovery, and interactive tooling.
 
 The function scans the transition row for the given state and collects all symbols
-whose transition target is non-zero.
+whose transition target is not DeadState.
 
 Use cases:
 - Producing precise lexer error messages ("expected one of ...")
@@ -439,7 +425,7 @@ func DFAAvailableSymbolsUnsafe[TObservation, TStateOutcome any](
 	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
 		target := *transCur.PtrAt(rowStart + symbolID)
 
-		if DFAIsDeadState(dfa, target) {
+		if target == DeadState {
 			continue
 		}
 
@@ -538,12 +524,18 @@ func DFATransitionsFromUnsafe[TObservation, TStateOutcome any](
 	return out
 }
 
-/* DFAIsDeadState checks whether the state is dead. */
-func DFAIsDeadState[TObservation, TStateOutcome any](
+func dfaStateIsDeadEndUnsafe[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) bool {
-	return dfa.deadStates[state]
+	rowStart := state * dfa.alphabetSize
+	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
+	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
+		if *transCur.PtrAt(rowStart + symbolID) != DeadState {
+			return false
+		}
+	}
+	return true
 }
 
 /*
@@ -554,8 +546,8 @@ Each formatting function is optional (nil means use default formatting). This al
 partial formatting (e.g., only format symbol names, not IDs).
 
 FormatStateIndicator supplies the single character shown between brackets for each
-state (e.g. [A] for accepting, [D] for dead). If nil, default is " " for normal
-states and "D" for dead states. Return a single character (e.g. "A") so clients can
+state (e.g. [A] for accepting, [D] for dead-end). If nil, default is " " for normal
+states and "D" for dead-end states. Return a single character (e.g. "A") so clients can
 mark accepting or other state kinds; only the first rune is used for alignment.
 
 Use cases:
@@ -692,7 +684,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 
 	for s := uint64(0); s < dfa.numStates; s++ {
-		isDead := dfa.deadStates[s]
+		isDead := dfaStateIsDeadEndUnsafe(dfa, s)
 		outcome := *outCur.PtrAt(s)
 
 		var outcomeStr string
@@ -729,7 +721,7 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 
 	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	for s := uint64(0); s < dfa.numStates; s++ {
-		isDead := dfa.deadStates[s]
+		isDead := dfaStateIsDeadEndUnsafe(dfa, s)
 		outcome := *outCur.PtrAt(s)
 		status := dfaDebugStateIndicatorRune(formatter, s, outcome, isDead)
 
@@ -738,8 +730,10 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 		rowStart := s * dfa.alphabetSize
 		for symID := uint64(0); symID < dfa.alphabetSize; symID++ {
 			target := *transCur.PtrAt(rowStart + symID)
-			cell := stateStrings[target]
-			if dfa.deadStates[target] {
+			cell := "—"
+			if target != DeadState {
+				cell = stateStrings[target]
+			} else {
 				cell = "—"
 			}
 			sb.WriteString(fmt.Sprintf(" %*s ", maxSymbolWidth, cell))
@@ -824,6 +818,9 @@ func DFAPredecessorSets[TObservation, TStateOutcome any](
 
 		for symbol := uint64(0); symbol < dfa.alphabetSize; symbol++ {
 			target := *transCur.PtrAt(row + symbol)
+			if target == DeadState {
+				continue
+			}
 			incoming[symbol][target] = append(incoming[symbol][target], state)
 		}
 	}
