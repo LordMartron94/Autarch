@@ -12,11 +12,32 @@ Space complexity: O(k)
 type TokenSet[TTokenID comparable] map[TTokenID]struct{}
 
 /*
+ProductionClause is the FIRST set and guard for one production of a rule, parallel to
+Rule.Productions[i]. First includes FOLLOW(parent NT) when the production’s RHS is nullable
+(matching predictive-set semantics). ChildRuleName is set when the RHS is exactly one
+non-terminal, so clients can map this clause to that child rule’s name (e.g. Syntaxa choice arms).
+
+Time complexity: O(1) for field access
+Space complexity: O(|First| + |Guard|)
+*/
+type ProductionClause[TTokenID comparable] struct {
+	First         TokenSet[TTokenID]
+	Guard         []LookaheadConstraint[TTokenID]
+	ChildRuleName string
+}
+
+/*
 GrammarAnalysis holds the predictive parsing data for a Contexta Grammar.
 
 Nullable, First, and Follow are keyed by non-terminal name. Used by the LL(1)
 compiler to compute predictive sets and ensure at most one production applies
 per (non-terminal, lookahead token). Keys are strictly non-terminal names.
+
+ProductionClauses holds per-production FIRST and guards (see ProductionClause). Merged First[nt]
+remains the union over all productions of nt for fixpoint and FOLLOW computation.
+
+MODE_DPDA does not support non-empty Production.Guard until the compiler can key transitions
+on guard-aware observations; see Compile error when guards are present.
 
 Use cases:
 - Building an LL(1) DPDA via CompileDPDA (CompilerCreate with MODE_DPDA)
@@ -27,9 +48,10 @@ Time complexity: O(1) for map access
 Space complexity: O(n + f) where n is non-terminals, f is total FIRST/FOLLOW entries
 */
 type GrammarAnalysis[TTokenID comparable] struct {
-	Nullable map[string]bool
-	First    map[string]TokenSet[TTokenID]
-	Follow   map[string]TokenSet[TTokenID]
+	Nullable           map[string]bool
+	First              map[string]TokenSet[TTokenID]
+	Follow             map[string]TokenSet[TTokenID]
+	ProductionClauses  map[string][]ProductionClause[TTokenID]
 }
 
 /*
@@ -69,6 +91,7 @@ func ComputeAnalysis[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, 
 	computeNullable(grammar, analysis)
 	computeFirst(grammar, analysis)
 	computeFollow(grammar, analysis)
+	computeProductionClauses(grammar, analysis)
 
 	return analysis
 }
@@ -137,6 +160,65 @@ func computeFirst[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMe
 				}
 			}
 		}
+	}
+}
+
+/*
+firstOfProductionSymbols returns FIRST of the symbol sequence and whether the whole RHS is nullable.
+Mirrors predictive-set logic used when a production expands a non-terminal in LL compilation.
+*/
+func firstOfProductionSymbols[TTokenID comparable, TMeta any](
+	symbols []Symbol[TTokenID, TMeta],
+	analysis *GrammarAnalysis[TTokenID],
+) (TokenSet[TTokenID], bool) {
+	firstSet := make(TokenSet[TTokenID])
+	if len(symbols) == 0 {
+		return firstSet, true
+	}
+	for _, sym := range symbols {
+		switch sym.Type {
+		case SYMBOL_EPSILON:
+			continue
+		case SYMBOL_TERMINAL:
+			firstSet[sym.Token] = struct{}{}
+			return firstSet, false
+		case SYMBOL_NON_TERMINAL:
+			mergeSets(firstSet, analysis.First[sym.Name])
+			if !analysis.Nullable[sym.Name] {
+				return firstSet, false
+			}
+		}
+	}
+	return firstSet, true
+}
+
+func computeProductionClauses[TTokenID comparable, TMeta any](grammar *Grammar[TTokenID, TMeta], analysis *GrammarAnalysis[TTokenID]) {
+	analysis.ProductionClauses = make(map[string][]ProductionClause[TTokenID])
+
+	for nt, rule := range grammar.Rules {
+		clauses := make([]ProductionClause[TTokenID], 0, len(rule.Productions))
+		for _, prod := range rule.Productions {
+			firstSet, rhsNullable := firstOfProductionSymbols(prod.Symbols, analysis)
+			clauseFirst := make(TokenSet[TTokenID])
+			mergeSets(clauseFirst, firstSet)
+			if rhsNullable {
+				mergeSets(clauseFirst, analysis.Follow[nt])
+			}
+
+			guard := append([]LookaheadConstraint[TTokenID](nil), prod.Guard...)
+
+			childRuleName := ""
+			if len(prod.Symbols) == 1 && prod.Symbols[0].Type == SYMBOL_NON_TERMINAL {
+				childRuleName = prod.Symbols[0].Name
+			}
+
+			clauses = append(clauses, ProductionClause[TTokenID]{
+				First:         clauseFirst,
+				Guard:         guard,
+				ChildRuleName: childRuleName,
+			})
+		}
+		analysis.ProductionClauses[nt] = clauses
 	}
 }
 

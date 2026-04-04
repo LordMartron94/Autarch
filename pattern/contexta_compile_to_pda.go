@@ -182,6 +182,11 @@ Edge cases:
 - In DPDA mode, acceptance transition uses Epsilon on bottom marker when input is fully consumed
 */
 func (c *LLCompiler[TObservation, TMeta]) Compile() ([]autarch.PDATransition, map[autarch.StackSymbolID]string, error) {
+	if c.mode == MODE_DPDA && grammarHasProductionGuards(c.grammar) {
+		return nil, nil, fmt.Errorf(
+			"contexta: MODE_DPDA does not support productions with non-empty Guard; use MODE_NPDA or a guard-aware runtime until DPDA supports lookahead predicates",
+		)
+	}
 
 	startStackID := c.getNonTerminalID(c.grammar.StartSymbol)
 
@@ -236,6 +241,20 @@ func (c *LLCompiler[TObservation, TMeta]) compileRules() error {
 		}
 	}
 	return nil
+}
+
+func grammarHasProductionGuards[TObservation comparable, TMeta any](g *Grammar[TObservation, TMeta]) bool {
+	if g == nil {
+		return false
+	}
+	for _, rule := range g.Rules {
+		for i := range rule.Productions {
+			if len(rule.Productions[i].Guard) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *LLCompiler[TObservation, TMeta]) compileProduction(ntName string, ntID autarch.StackSymbolID, prod Production[TObservation, TMeta]) error {
@@ -520,6 +539,7 @@ Space complexity: O(grammar + DPDA)
 Prerequisites:
 - grammar must be valid and LL(1) (no predictive set overlaps)
 - indexer must return exactly one symbol per observation for determinism
+- productions must not use non-empty Production.Guard (Compile returns an error in MODE_DPDA)
 
 Edge cases:
 - Returns error if DPDACreate fails (nondeterminism or epsilon/consuming conflict)
