@@ -37,103 +37,15 @@ func NFAMergeOr[TObservation any, TStateOutcome comparable](
 	allocFn memarch.AllocationFn,
 ) *NFA[TObservation, TStateOutcome] {
 
-	// ------------------------------------------------------------
-	// 1. Merge alphabet
-	// ------------------------------------------------------------
+	merge := MergeAlphabets(nfaA.alphabet, nfaB.alphabet)
+	newAlphabet := merge.Alphabet
+	remapA := merge.Remaps[0]
+	remapB := merge.Remaps[1]
 
-	nameToDef := make(map[string]SymbolDefinition[TObservation])
-	nameToNewID := make(map[string]uint64)
-
-	for _, def := range nfaA.alphabet {
-		if _, ok := nameToDef[def.Name]; !ok {
-			id := uint64(len(nameToDef))
-			nameToDef[def.Name] = def
-			nameToNewID[def.Name] = id
-		}
-	}
-	for _, def := range nfaB.alphabet {
-		if _, ok := nameToDef[def.Name]; !ok {
-			id := uint64(len(nameToDef))
-			nameToDef[def.Name] = def
-			nameToNewID[def.Name] = id
-		}
-	}
-
-	added := make(map[string]bool)
-	newAlphabet := make([]SymbolDefinition[TObservation], 0, len(nameToDef))
-
-	for _, def := range nfaA.alphabet {
-		if !added[def.Name] {
-			def.ID = nameToNewID[def.Name]
-			newAlphabet = append(newAlphabet, def)
-			added[def.Name] = true
-		}
-	}
-	for _, def := range nfaB.alphabet {
-		if !added[def.Name] {
-			def.ID = nameToNewID[def.Name]
-			newAlphabet = append(newAlphabet, def)
-			added[def.Name] = true
-		}
-	}
-
-	for i := range newAlphabet {
-		newAlphabet[i].ID = uint64(i)
-	}
-
-	nameToFinalID := make(map[string]uint64)
-	for i, def := range newAlphabet {
-		nameToFinalID[def.Name] = uint64(i)
-	}
-
-	remapA := make(map[uint64]uint64)
-	remapB := make(map[uint64]uint64)
-
-	for i, def := range nfaA.alphabet {
-		remapA[uint64(i)] = nameToFinalID[def.Name]
-	}
-	for i, def := range nfaB.alphabet {
-		remapB[uint64(i)] = nameToFinalID[def.Name]
-	}
-
-	seenEpoch := make([]uint32, len(newAlphabet))
-	currentEpoch := uint32(1)
-	outScratch := make([]uint64, 0, len(newAlphabet))
-	mergedResolver := func(observation TObservation) []uint64 {
-		idsA := nfaA.nondeterministicResolver(observation)
-		idsB := nfaB.nondeterministicResolver(observation)
-		if len(idsA) == 0 && len(idsB) == 0 {
-			return nil
-		}
-		currentEpoch++
-		if currentEpoch == 0 {
-			for i := range seenEpoch {
-				seenEpoch[i] = 0
-			}
-			currentEpoch = 1
-		}
-		outScratch = outScratch[:0]
-
-		for _, id := range idsA {
-			merged := remapA[id]
-			if seenEpoch[merged] == currentEpoch {
-				continue
-			}
-			seenEpoch[merged] = currentEpoch
-			outScratch = append(outScratch, merged)
-		}
-
-		for _, id := range idsB {
-			merged := remapB[id]
-			if seenEpoch[merged] == currentEpoch {
-				continue
-			}
-			seenEpoch[merged] = currentEpoch
-			outScratch = append(outScratch, merged)
-		}
-
-		return outScratch
-	}
+	mergedResolver := MergeTwoAlphabetsNondeterministicResolver(
+		newAlphabet, remapA, remapB,
+		nfaA.nondeterministicResolver, nfaB.nondeterministicResolver,
+	)
 
 	// ------------------------------------------------------------
 	// 2. Build merged state space

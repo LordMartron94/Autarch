@@ -11,8 +11,14 @@
 //   - Memory-efficient implementations using manual memory management
 //   - NFA to DFA conversion via subset construction
 //   - DFA minimization using Hopcroft's algorithm
+//   - DFA product intersection (DFAIntersect) for boolean language operations
+//   - Prefix continuation analysis (DFAContinuationAfterPrefix) for boundary guards
+//   - Shared alphabet merge (MergeAlphabets) for multi-automaton operations
 //   - NFA merging operations for combining multiple automata
 //   - NPDA for context-free parsing (stack-based, epsilon moves, branch limits)
+//
+// Pattern-boundary helpers (compile Regula to DFA, literal continuation sets) live in
+// autarch/pattern (RegulaCompileToDFA, PatternLiteralBoundaryChars).
 //
 // The package is designed for use in lexers, parsers, and pattern matching
 // systems where deterministic state machines are required for efficient
