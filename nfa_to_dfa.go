@@ -281,5 +281,6 @@ func createTempAllocator(minMem, maxMem memcore.MemoryUnitBytes) memcore.MarkRaw
 			}
 			return nextSize
 		},
+		"autarch temp",
 	)
 }

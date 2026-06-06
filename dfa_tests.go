@@ -20,7 +20,7 @@ func TestDFA(t *testing.T) {
 		}
 
 		return newSize
-	})
+	}, "test")
 
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 

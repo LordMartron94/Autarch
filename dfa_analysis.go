@@ -23,12 +23,11 @@ func DFACoaccessibleFromAccept[TObservation, TStateOutcome any](
 ) []bool {
 	n := dfa.numStates
 	coaccess := make([]bool, n)
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 	preds := DFAPredecessorSets(dfa)
 	stack := make([]uint64, 0, n)
 
 	for s := uint64(0); s < n; s++ {
-		if isAccept(*outCur.PtrAt(s)) {
+		if isAccept(memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, s)) {
 			coaccess[s] = true
 			stack = append(stack, s)
 		}
@@ -65,12 +64,11 @@ func DFAContinuationAfterPrefix[TObservation cmp.Ordered, TStateOutcome any](
 	}
 
 	coaccess := DFACoaccessibleFromAccept(dfa, isAccept)
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	rowStart := state * dfa.alphabetSize
 
 	var ranges []ObservationRange[TObservation]
 	for symID := uint64(0); symID < dfa.alphabetSize; symID++ {
-		target := *transCur.PtrAt(rowStart + symID)
+		target := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+symID)
 		if target == DeadState || !coaccess[target] {
 			continue
 		}
@@ -85,7 +83,6 @@ func dfaWalkPrefix[TObservation, TStateOutcome any](
 	prefix []TObservation,
 ) (uint64, bool) {
 	state := StartStateID
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
 	for _, obs := range prefix {
 		symbolID, ok := dfa.deterministicResolver(obs)
@@ -93,7 +90,7 @@ func dfaWalkPrefix[TObservation, TStateOutcome any](
 			return 0, false
 		}
 		idx := getTransitionIDX(dfa.alphabetSize, state, symbolID)
-		state = *transCur.PtrAt(idx)
+		state = memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, idx)
 		if state == DeadState {
 			return 0, false
 		}

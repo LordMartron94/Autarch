@@ -251,8 +251,7 @@ func DPDARun[TObservation, TStateOutcome any](
 	currentState, _ = processEpsilons(dpda, currentState, stack)
 
 	// Fetch outcome
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dpda.outcomes)
-	outcome := *outCur.PtrAt(currentState)
+	outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dpda.outcomes, currentState)
 	return &outcome, nil
 }
 

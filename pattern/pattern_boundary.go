@@ -19,7 +19,7 @@ func boundaryCompileAlloc() memarch.AllocationFn {
 			panic("pattern boundary compile: temp allocator cap exceeded")
 		}
 		return newSize
-	})
+	}, "pattern boundary compile")
 	return func(size, align uint64) memcore.MarkRaw {
 		return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, size, align)
 	}

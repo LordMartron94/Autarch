@@ -18,7 +18,7 @@ func TestNFAToDFA(t *testing.T) {
 			panic("too much memory for a test")
 		}
 		return newSize
-	})
+	}, "test")
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
 	symbolA := SymbolCreate[rune]("a", 0)
@@ -130,7 +130,7 @@ func TestNFAToDFAEpsilon(t *testing.T) {
 			panic("too much memory for a test")
 		}
 		return newSize
-	})
+	}, "test")
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
 	symbolA := SymbolCreate[rune]("a", 0)

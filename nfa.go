@@ -348,9 +348,8 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 	hasStateIndicator := formatter != nil && formatter.FormatStateIndicator != nil
 	stateIndicators := make([]string, nfa.numStates)
 	if hasStateIndicator {
-		outCurForInd := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
 		for s := uint64(0); s < nfa.numStates; s++ {
-			outcome := *outCurForInd.PtrAt(s)
+			outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](nfa.outcomes, s)
 			stateIndicators[s] = nfaDebugStateIndicatorRune(formatter, s, outcome)
 		}
 	}
@@ -450,10 +449,9 @@ func NFADebugPrint[TObservation, TStateOutcome any](
 	// 3. States (Outcome)
 	// ============================================================
 	sb.WriteString("States:\n")
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
 
 	for s := uint64(0); s < nfa.numStates; s++ {
-		outcome := *outCur.PtrAt(s)
+		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](nfa.outcomes, s)
 		outStr := nfaDebugFormatOutcome(formatter, outcome)
 		if hasStateIndicator {
 			sb.WriteString(fmt.Sprintf("  [%s] state %*s → %s\n", stateIndicators[s], maxStateWidth, stateStrings[s], outStr))
@@ -705,10 +703,8 @@ func NFARun[TObservation, TStateOutcome any](nfa *NFA[TObservation, TStateOutcom
 
 	results := make([]TStateOutcome, 0)
 
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](nfa.outcomes)
-
 	for _, s := range current {
-		results = append(results, *outCur.PtrAt(s))
+		results = append(results, memstruct.ArrayItemGetAtUnsafe[TStateOutcome](nfa.outcomes, s))
 	}
 
 	return results, nil

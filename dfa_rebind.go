@@ -22,13 +22,11 @@ func DFARebindAlphabet[TObservation, TStateOutcome any](
 
 	newSize := uint64(len(mergedAlphabet))
 	outcomes := make([]TStateOutcome, dfa.numStates)
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 	for s := uint64(0); s < dfa.numStates; s++ {
-		outcomes[s] = *outCur.PtrAt(s)
+		outcomes[s] = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, s)
 	}
 
 	transitions := make([]Transition[TObservation], 0, dfa.numStates*newSize)
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
 	for state := uint64(0); state < dfa.numStates; state++ {
 		rowStart := state * dfa.alphabetSize
@@ -38,7 +36,7 @@ func DFARebindAlphabet[TObservation, TStateOutcome any](
 				if newID != symID || oldID >= dfa.alphabetSize {
 					continue
 				}
-				oldTarget := *transCur.PtrAt(rowStart + oldID)
+				oldTarget := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+oldID)
 				if oldTarget != DeadState {
 					target = oldTarget
 				}

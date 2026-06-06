@@ -250,7 +250,7 @@ func NPDACreate[TObservation, TStateOutcome any](
 		transitionTable[key] = append(transitionTable[key], transition.Result)
 	}
 
-	stackAllocator := memforge.SlabAllocatorCreate[StackNode](maxStackNodes)
+	stackAllocator := memforge.SlabAllocatorCreate[StackNode](maxStackNodes, "autarch npda stack")
 
 	return &NPDA[TObservation, TStateOutcome]{
 		outcomes:                 outcomeTable,
@@ -329,8 +329,8 @@ func NPDANumStates[TObservation, TStateOutcome any](npda *NPDA[TObservation, TSt
 /*
 NPDAOutcomesGet returns the raw memory array (MarkRaw) containing state outcomes.
 
-State outcomes are indexed by state ID; use memstruct.ArrayCursorCreate or equivalent
-to read TStateOutcome values. Do not modify the underlying memory.
+State outcomes are indexed by state ID; use memstruct.ArrayItemGetAtUnsafe to read
+TStateOutcome values. Do not modify the underlying memory.
 
 Use cases:
 - Custom outcome collection or filtering
@@ -691,12 +691,11 @@ func collectValidOutcomes[TObservation, TStateOutcome any](
 
 	seenStates := make(map[uint64]bool)
 	var outcomes []TStateOutcome
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](npda.outcomes)
 
 	for _, config := range configs {
 		if !seenStates[config.StateID] {
 			seenStates[config.StateID] = true
-			outcomes = append(outcomes, *outCur.PtrAt(config.StateID))
+			outcomes = append(outcomes, memstruct.ArrayItemGetAtUnsafe[TStateOutcome](npda.outcomes, config.StateID))
 		}
 	}
 

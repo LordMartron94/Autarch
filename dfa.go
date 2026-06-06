@@ -41,9 +41,6 @@ type DFA[TObservation, TStateOutcome any] struct {
 	outcomes    memcore.MarkRaw // Array[TStateOutcome]
 	transitions memcore.MarkRaw // Array[uint64]
 
-	outcomesCursor    memstruct.ArrayCursor[TStateOutcome]
-	transitionsCursor memstruct.ArrayCursor[uint64]
-
 	deterministicResolver DeterministicSymbolResolver[TObservation]
 
 	alphabet     []SymbolDefinition[TObservation]
@@ -272,8 +269,6 @@ func DFACreate[TObservation, TStateOutcome any](
 	return &DFA[TObservation, TStateOutcome]{
 		outcomes:              outcomeTable,
 		transitions:           transitionArray,
-		outcomesCursor:        memstruct.ArrayCursorCreate[TStateOutcome](outcomeTable),
-		transitionsCursor:     memstruct.ArrayCursorCreate[uint64](transitionArray),
 		deterministicResolver: resolver,
 		numStates:             numStates,
 		alphabetSize:          alphabetSize,
@@ -349,11 +344,10 @@ func DFARun[TObservation, TStateOutcome any](
 			}
 		}
 		transitionIDX := getTransitionIDX(dfa.alphabetSize, state, symbolID)
-		newState := dfa.transitionsCursor.PtrAt(transitionIDX)
-		state = *newState
+		state = memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, transitionIDX)
 	}
 
-	outcome = *dfa.outcomesCursor.PtrAt(state)
+	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
 	return outcome, nil
 }
 
@@ -417,13 +411,12 @@ func DFAAvailableSymbolsUnsafe[TObservation, TStateOutcome any](
 	state uint64,
 ) []SymbolDefinition[TObservation] {
 	rowStart := state * dfa.alphabetSize
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
 	// Upper bound = alphabet size (never reallocs beyond that)
 	out := make([]SymbolDefinition[TObservation], 0, dfa.alphabetSize)
 
 	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
-		target := *transCur.PtrAt(rowStart + symbolID)
+		target := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+symbolID)
 
 		if target == DeadState {
 			continue
@@ -502,7 +495,6 @@ func DFATransitionsFromUnsafe[TObservation, TStateOutcome any](
 	Target uint64
 } {
 	rowStart := state * dfa.alphabetSize
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 
 	out := make([]struct {
 		Symbol SymbolDefinition[TObservation]
@@ -510,7 +502,7 @@ func DFATransitionsFromUnsafe[TObservation, TStateOutcome any](
 	}, 0, dfa.alphabetSize)
 
 	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
-		target := *transCur.PtrAt(rowStart + symbolID)
+		target := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+symbolID)
 
 		out = append(out, struct {
 			Symbol SymbolDefinition[TObservation]
@@ -529,9 +521,8 @@ func dfaStateIsDeadEndUnsafe[TObservation, TStateOutcome any](
 	state uint64,
 ) bool {
 	rowStart := state * dfa.alphabetSize
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	for symbolID := uint64(0); symbolID < dfa.alphabetSize; symbolID++ {
-		if *transCur.PtrAt(rowStart + symbolID) != DeadState {
+		if memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+symbolID) != DeadState {
 			return false
 		}
 	}
@@ -681,11 +672,10 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	// 3. States (Outcome)
 	// ============================================================
 	sb.WriteString("States:\n")
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
 
 	for s := uint64(0); s < dfa.numStates; s++ {
 		isDead := dfaStateIsDeadEndUnsafe(dfa, s)
-		outcome := *outCur.PtrAt(s)
+		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, s)
 
 		var outcomeStr string
 		if formatter != nil && formatter.FormatStateOutcome != nil {
@@ -719,17 +709,16 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	}
 	sb.WriteString("\n")
 
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 	for s := uint64(0); s < dfa.numStates; s++ {
 		isDead := dfaStateIsDeadEndUnsafe(dfa, s)
-		outcome := *outCur.PtrAt(s)
+		outcome := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, s)
 		status := dfaDebugStateIndicatorRune(formatter, s, outcome, isDead)
 
 		sb.WriteString(fmt.Sprintf("  %s %*s |", status, maxStateWidth, stateStrings[s]))
 
 		rowStart := s * dfa.alphabetSize
 		for symID := uint64(0); symID < dfa.alphabetSize; symID++ {
-			target := *transCur.PtrAt(rowStart + symID)
+			target := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, rowStart+symID)
 			cell := "—"
 			if target != DeadState {
 				cell = stateStrings[target]
@@ -742,43 +731,6 @@ func DFADebugPrint[TObservation, TStateOutcome any](
 	}
 
 	return sb.String()
-}
-
-/*
-DFACursorGet returns the cached transition-table cursor for efficient access.
-
-The cursor provides optimized access to the transition table without repeated
-array header dereferencing, improving performance in hot loops.
-
-Use cases:
-- Optimizing DFA execution in performance-critical code
-- Iterating over transitions efficiently
-- Reducing memory access overhead
-
-Time complexity: O(1)
-Space complexity: O(1)
-
-Prerequisites:
-- dfa must be a valid DFA instance
-
-Edge cases:
-- Cursor remains valid as long as DFA is not modified
-- Multiple cursors can be created for parallel processing
-*/
-func DFACursorGet[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) memstruct.ArrayCursor[uint64] {
-	return dfa.transitionsCursor
-}
-
-/*
-DFARefreshCursors forces the DFA to rebuild its internal high-performance cursors
-from its MarkRaw pointers.
-
-Call this immediately after any bulk memory reallocations that move the underlying
-arena to ensure the cached absolute pointers are mathematically valid.
-*/
-func DFARefreshCursors[TObservation, TStateOutcome any](dfa *DFA[TObservation, TStateOutcome]) {
-	dfa.outcomesCursor = memstruct.ArrayCursorCreate[TStateOutcome](dfa.outcomes)
-	dfa.transitionsCursor = memstruct.ArrayCursorCreate[uint64](dfa.transitions)
 }
 
 /*
@@ -811,13 +763,11 @@ func DFAPredecessorSets[TObservation, TStateOutcome any](
 		incoming[c] = make([][]uint64, dfa.numStates)
 	}
 
-	transCur := memstruct.ArrayCursorCreate[uint64](dfa.transitions)
-
 	for state := uint64(0); state < dfa.numStates; state++ {
 		row := state * dfa.alphabetSize
 
 		for symbol := uint64(0); symbol < dfa.alphabetSize; symbol++ {
-			target := *transCur.PtrAt(row + symbol)
+			target := memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, row+symbol)
 			if target == DeadState {
 				continue
 			}
@@ -847,7 +797,6 @@ Prerequisites:
 - dfa must be a valid DFA instance
 - currentState must be a valid state index
 - observation should be in the alphabet (checked)
-- arrayCursor must be from DFACursorGet
 
 Edge cases:
 - Returns error if observation is not in alphabet
@@ -857,7 +806,6 @@ func DFAStep[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	currentState uint64,
 	observation TObservation,
-	arrayCursor memstruct.ArrayCursor[uint64],
 ) (uint64, error) {
 	symbolID, ok := dfa.deterministicResolver(observation)
 	if !ok {
@@ -869,8 +817,7 @@ func DFAStep[TObservation, TStateOutcome any](
 		}
 	}
 	transitionIDX := getTransitionIDX(dfa.alphabetSize, currentState, symbolID)
-	newState := arrayCursor.PtrAt(transitionIDX)
-	return *newState, nil
+	return memstruct.ArrayItemGetAtUnsafe[uint64](dfa.transitions, transitionIDX), nil
 }
 
 /*
@@ -921,7 +868,7 @@ func DFAStateOutcomeUnsafe[TObservation, TStateOutcome any](
 	dfa *DFA[TObservation, TStateOutcome],
 	state uint64,
 ) (outcome TStateOutcome) {
-	outcome = *dfa.outcomesCursor.PtrAt(state)
+	outcome = memstruct.ArrayItemGetAtUnsafe[TStateOutcome](dfa.outcomes, state)
 	return outcome
 }
 

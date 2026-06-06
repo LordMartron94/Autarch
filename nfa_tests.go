@@ -20,7 +20,7 @@ func TestNFA(t *testing.T) {
 		}
 
 		return newSize
-	})
+	}, "test")
 
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
@@ -119,7 +119,7 @@ func TestNFAEpsilon(t *testing.T) {
 		}
 
 		return newSize
-	})
+	}, "test")
 
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 

@@ -40,10 +40,9 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 
 	// 2. Initial partition P: by outcome key (every state has an outcome)
 	outcomeGroups := make(map[TKey]*dfaStateSubset)
-	outCur := memstruct.ArrayCursorCreate[TStateOutcome](outArray)
 
 	for s := uint64(0); s < numStates; s++ {
-		key := outcomeKeyFn(*outCur.PtrAt(s))
+		key := outcomeKeyFn(memstruct.ArrayItemGetAtUnsafe[TStateOutcome](outArray, s))
 
 		bs, ok := outcomeGroups[key]
 		if !ok {
@@ -130,7 +129,7 @@ func DFAMinimize[TObservation, TStateOutcome any, TKey comparable](
 		P,
 		alphabet,
 		dfa.deterministicResolver,
-		outCur,
+		outArray,
 	)
 }
 
@@ -140,7 +139,7 @@ func buildMinimizedDFA[TO any, TR any](
 	P []dfaStateSubset,
 	alphabet []SymbolDefinition[TO],
 	resolver DeterministicSymbolResolver[TO],
-	outCur memstruct.ArrayCursor[TR],
+	outcomes memcore.MarkRaw,
 ) *DFA[TO, TR] {
 	// Canonicalize: Start state (0) must be Block 0
 	for i := range P {
@@ -164,7 +163,7 @@ func buildMinimizedDFA[TO any, TR any](
 
 	for bid, B := range P {
 		rep := B.States()[0]
-		minOutcomes[bid] = *outCur.PtrAt(rep)
+		minOutcomes[bid] = memstruct.ArrayItemGetAtUnsafe[TR](outcomes, rep)
 
 		for symID := uint64(0); symID < uint64(len(alphabet)); symID++ {
 			oldIdx := getTransitionIDX(uint64(len(alphabet)), rep, symID)

@@ -37,9 +37,6 @@ func DFAIntersect[TObservation, TStateOutcome comparable](
 	var outcomes []TStateOutcome
 	transitions := make([]Transition[TObservation], 0)
 
-	outCurA := memstruct.ArrayCursorCreate[TStateOutcome](aRe.outcomes)
-	outCurB := memstruct.ArrayCursorCreate[TStateOutcome](bRe.outcomes)
-
 	getID := func(pa, pb uint64) uint64 {
 		key := dfaProductKey{a: pa, b: pb}
 		if id, ok := registry[key]; ok {
@@ -48,8 +45,8 @@ func DFAIntersect[TObservation, TStateOutcome comparable](
 		id := uint64(len(registry))
 		registry[key] = id
 
-		outA := *outCurA.PtrAt(pa)
-		outB := *outCurB.PtrAt(pb)
+		outA := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](aRe.outcomes, pa)
+		outB := memstruct.ArrayItemGetAtUnsafe[TStateOutcome](bRe.outcomes, pb)
 		if isAccept(outA) && isAccept(outB) {
 			outcomes = append(outcomes, acceptOut)
 		} else {
@@ -60,8 +57,6 @@ func DFAIntersect[TObservation, TStateOutcome comparable](
 
 	work := []dfaProductKey{{0, 0}}
 	seen := map[dfaProductKey]bool{{0, 0}: true}
-	transA := memstruct.ArrayCursorCreate[uint64](aRe.transitions)
-	transB := memstruct.ArrayCursorCreate[uint64](bRe.transitions)
 
 	for len(work) > 0 {
 		cur := work[0]
@@ -71,8 +66,8 @@ func DFAIntersect[TObservation, TStateOutcome comparable](
 		for symID := uint64(0); symID < alphabetSize; symID++ {
 			idxA := getTransitionIDX(alphabetSize, cur.a, symID)
 			idxB := getTransitionIDX(alphabetSize, cur.b, symID)
-			na := *transA.PtrAt(idxA)
-			nb := *transB.PtrAt(idxB)
+			na := memstruct.ArrayItemGetAtUnsafe[uint64](aRe.transitions, idxA)
+			nb := memstruct.ArrayItemGetAtUnsafe[uint64](bRe.transitions, idxB)
 
 			if na == DeadState || nb == DeadState {
 				transitions = append(transitions, Transition[TObservation]{

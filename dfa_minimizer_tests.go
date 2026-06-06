@@ -21,7 +21,7 @@ func TestDFAMinimize(t *testing.T) {
 			panic("too much memory for a test")
 		}
 		return newSize
-	})
+	}, "test")
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
 	dfaAllocationFn := func(sizeBytes, alignment uint64) memcore.MarkRaw {
